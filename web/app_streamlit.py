@@ -4,6 +4,7 @@ from typing import Optional
 from pathlib import Path
 import json
 import io
+from difflib import get_close_matches
 import sys
 import os
 import time
@@ -24,10 +25,10 @@ if str(repo_root) not in sys.path:
     sys.path.insert(0, str(repo_root))
 
 from src.config import TMDB_API_KEY as DEFAULT_TMDB_KEY
-from src.data__loader import load_movies, set_poster_for_title
+from src.data__loader import load_movies
 from src.recomender import MOOD_TO_GENRES
 from src.scraper import scrape_top_n_movies
-from src.user_store import learning_summary, record_feedback, rerank_results_for_learning
+from src.user_store import learning_progress, learning_summary, record_feedback, rerank_results_for_learning
 from src.multimodal_mood import (
     detect_multimodal_mood_backend,
 )
@@ -53,20 +54,20 @@ st.markdown(
     <style>
     @import url('https://fonts.googleapis.com/css2?family=Unbounded:wght@400;600;700&family=Space+Grotesk:wght@400;500;600&display=swap');
     :root {
-        --bg-1: #0b0b0f;
-        --bg-2: #14141b;
-        --accent: #ff2d55;
-        --accent-soft: #ff4d6d;
-        --card: #16161d;
-        --card-2: #1c1c24;
-        --text: #f2f2f3;
-        --muted: #b0b3c2;
-        --line: #232330;
+        --bg-1: #031018;
+        --bg-2: #071a25;
+        --accent: #38e6ff;
+        --accent-soft: #5cb9ff;
+        --card: #0b1b27;
+        --card-2: #0e2432;
+        --text: #e9f8ff;
+        --muted: #a7c8d8;
+        --line: #1f3b4a;
     }
     .stApp {
         background:
-            radial-gradient(1200px 800px at 85% 0%, rgba(255,45,85,0.20), transparent 60%),
-            radial-gradient(900px 700px at 10% 20%, rgba(255,77,109,0.12), transparent 55%),
+            radial-gradient(1200px 800px at 85% 0%, rgba(56,230,255,0.18), transparent 60%),
+            radial-gradient(900px 700px at 10% 20%, rgba(92,185,255,0.12), transparent 55%),
             linear-gradient(180deg, var(--bg-1), var(--bg-2));
         color: var(--text);
         font-family: "Space Grotesk", system-ui, -apple-system, sans-serif;
@@ -106,8 +107,8 @@ st.markdown(
     .hero {
         border:1px solid var(--line);
         background:
-            radial-gradient(500px 400px at 85% 20%, rgba(255,45,85,0.35), transparent 60%),
-            linear-gradient(120deg, rgba(20,20,27,0.9), rgba(12,12,16,0.9));
+            radial-gradient(500px 400px at 85% 20%, rgba(56,230,255,0.30), transparent 60%),
+            linear-gradient(120deg, rgba(10,25,35,0.9), rgba(7,18,26,0.9));
         border-radius: 22px;
         padding: 22px;
         box-shadow: 0 24px 60px rgba(0,0,0,0.35);
@@ -115,8 +116,8 @@ st.markdown(
     }
     .hero-tag {
         display:inline-block; font-size:12px; font-weight:600; letter-spacing:0.08em;
-        text-transform:uppercase; color:#ffe2e8; background:#2a121a;
-        border:1px solid #5a1d2b; padding:4px 10px; border-radius:999px; margin-bottom:10px;
+        text-transform:uppercase; color:#d9f8ff; background:#0f2430;
+        border:1px solid #2b5569; padding:4px 10px; border-radius:999px; margin-bottom:10px;
     }
     .hero-title {font-size: 32px; margin: 0 0 8px 0;}
     .hero-meta {color: var(--muted); font-size: 13px; margin-bottom: 12px;}
@@ -129,13 +130,64 @@ st.markdown(
     .movie-title {margin: 10px 0 6px 0;}
     .section-title {font-size: 22px; margin: 10px 0 8px 0;}
     .hero-dots {text-align: right; font-size: 14px; margin-bottom: 6px;}
-    .hero-dot {color:#4a4a57; margin-left:4px;}
+    .hero-dot {color:#3a6074; margin-left:4px;}
     .hero-dot.active {color: var(--accent);}
     .rating-stars {display:flex; align-items:center; gap:8px; margin: 6px 0 8px 0;}
     .stars {letter-spacing:2px; font-size:16px;}
     .star-on {color:#ffb703;}
-    .star-off {color:#3a3a45;}
-    .rating-badge {background:#101018; border:1px solid var(--line); padding:6px 10px; border-radius:10px; font-weight:600;}
+    .star-off {color:#2f4e61;}
+    .rating-badge {background:#0a1822; border:1px solid var(--line); padding:6px 10px; border-radius:10px; font-weight:600;}
+    .banner-panel {
+        position: relative;
+        min-height: 360px;
+        border-radius: 22px;
+        border: 1px solid var(--line);
+        overflow: hidden;
+        margin-bottom: 16px;
+        box-shadow: 0 24px 56px rgba(0,0,0,0.35);
+        filter: brightness(1.12);
+    }
+    .banner-content {
+        position: absolute;
+        left: 22px;
+        bottom: 20px;
+        max-width: 64%;
+    }
+    .banner-kicker {
+        font-size: 11px;
+        text-transform: uppercase;
+        letter-spacing: 0.14em;
+        color: #bdeeff;
+        margin-bottom: 6px;
+        font-weight: 700;
+    }
+    .banner-title {
+        font-size: 40px;
+        line-height: 1.05;
+        margin: 0 0 8px 0;
+    }
+    .banner-sub {
+        color: #d1e9f5;
+        font-size: 13px;
+        line-height: 1.4;
+    }
+    .genre-strip {
+        border: 1px solid var(--line);
+        background: linear-gradient(180deg, rgba(11,27,39,0.92), rgba(14,36,50,0.92));
+        border-radius: 12px;
+        padding: 8px 10px;
+        margin: 10px 0 10px 0;
+        max-height: 88px;
+        overflow-y: auto;
+    }
+    .strip-title {
+        font-size: 11px;
+        color: #b8e9ff;
+        letter-spacing: 0.14em;
+        text-transform: uppercase;
+        margin: 0 0 4px 0;
+        font-weight: 700;
+    }
     </style>
     """,
     unsafe_allow_html=True,
@@ -230,6 +282,34 @@ def fetch_watch_url(
     return f"https://www.netflix.com/search?q={quote_plus(title_str)}"
 
 
+@st.cache_data(ttl=60 * 60)
+def fetch_banner_image_url(
+    title: Optional[str],
+    poster_path: Optional[str],
+    tmdb_api_key: Optional[str],
+    size: str = "w1280",
+) -> str:
+    """Prefer TMDB backdrop image (landscape) for banner usage."""
+    title_str = (title or "").strip()
+    if tmdb_api_key and title_str:
+        try:
+            url = "https://api.themoviedb.org/3/search/movie"
+            resp = requests.get(
+                url,
+                params={"api_key": tmdb_api_key, "query": title_str, "page": 1},
+                timeout=6,
+            )
+            resp.raise_for_status()
+            results = resp.json().get("results") or []
+            if results:
+                backdrop_path = results[0].get("backdrop_path")
+                if backdrop_path:
+                    return f"https://image.tmdb.org/t/p/{size}{backdrop_path}"
+        except Exception:
+            pass
+    return fetch_poster_url(title_str, poster_path, tmdb_api_key, size="w780")
+
+
 def show_movie_card(movie: dict[str, object], tmdb_api_key: Optional[str]):
     poster_value = movie.get('poster_path')
     title_str = str(movie.get("title", ""))
@@ -248,7 +328,10 @@ def show_movie_card(movie: dict[str, object], tmdb_api_key: Optional[str]):
         unsafe_allow_html=True,
     )
     st.markdown(f"<div class='movie-card'>", unsafe_allow_html=True)
-    st.markdown(f"<h3 class='movie-title'>{movie.get('title','Untitled')}</h3>", unsafe_allow_html=True)
+    st.markdown(
+        f"<h3 class='movie-title'><a href='{watch_url}' target='_blank' style='color:inherit;text-decoration:none;'>{movie.get('title','Untitled')}</a></h3>",
+        unsafe_allow_html=True,
+    )
     tmdb_info = fetch_tmdb_info(str(movie.get("title", "")), tmdb_api_key)
     rating_val = tmdb_info.get("rating") if tmdb_info else None
     if rating_val is None or rating_val == "":
@@ -268,15 +351,6 @@ def show_movie_card(movie: dict[str, object], tmdb_api_key: Optional[str]):
             )
             st.success("Added to favorites")
     st.markdown("</div>", unsafe_allow_html=True)
-    # persist poster URL into CSV if we found a real image and CSV didn't have one
-    try:
-        title_str = str(movie.get('title') or "").strip()
-        if title_str and (not movie.get('poster_path')) and poster and poster != PLACEHOLDER_URL:
-            # update CSV safely; persist only if title exists and CSV lacked poster
-            set_poster_for_title(title_str, poster)
-    except Exception:
-        # don't crash UI if persistence fails
-        pass
     
 
 @st.cache_data(ttl=10 * 60)
@@ -316,6 +390,19 @@ def _apply_content_filter(df: pd.DataFrame) -> pd.DataFrame:
     return df[mt.isin(allowed)]
 
 
+def _resolve_voice_title(spoken_text: str, df: pd.DataFrame) -> Optional[str]:
+    text = str(spoken_text or "").strip()
+    if not text or df.empty or "title" not in df.columns:
+        return None
+    titles = df["title"].fillna("").astype(str).tolist()
+    low = text.lower()
+    contains = [t for t in titles if low in t.lower() or t.lower() in low]
+    if contains:
+        return contains[0]
+    close = get_close_matches(text, titles, n=1, cutoff=0.55)
+    return close[0] if close else None
+
+
 st.markdown("<div class='app-shell'>", unsafe_allow_html=True)
 topbar_left, topbar_mid, topbar_right = st.columns([2, 5, 3])
 with topbar_left:
@@ -326,12 +413,74 @@ with topbar_mid:
         unsafe_allow_html=True,
     )
 with topbar_right:
-    title = st.text_input("Search", placeholder="Search movies", label_visibility="collapsed")
+    typed_title = st.text_input("Search", placeholder="Search movies", label_visibility="collapsed", key="search_title")
 
 st.markdown("Discover new releases and personalized recommendations.")
 
 st.session_state.setdefault("page", "home")
 st.session_state.setdefault("user_ratings", {})
+
+all_genres = _get_all_genres()
+if all_genres:
+    st.markdown("<div class='genre-strip'>", unsafe_allow_html=True)
+    st.markdown("<div class='strip-title'>Filter Lane</div>", unsafe_allow_html=True)
+    selected_genres = st.multiselect(
+        "Genres",
+        options=all_genres,
+        default=[],
+        label_visibility="collapsed",
+        placeholder="Filter recommendations by genres...",
+    )
+    st.markdown("</div>", unsafe_allow_html=True)
+else:
+    selected_genres = []
+
+banner_df = _apply_content_filter(load_movies())
+banner_movies: list[dict] = []
+if not banner_df.empty:
+    ranked = banner_df.copy()
+    if "popularity" in ranked.columns:
+        ranked["popularity"] = pd.to_numeric(ranked["popularity"], errors="coerce")
+        ranked = ranked.sort_values(by="popularity", ascending=False)
+    elif "rating" in ranked.columns:
+        ranked["rating"] = pd.to_numeric(ranked["rating"], errors="coerce")
+        ranked = ranked.sort_values(by="rating", ascending=False)
+    banner_movies = ranked.head(6).to_dict(orient="records")
+
+st.session_state.setdefault("hero_index", 0)
+banner_index = st.session_state["hero_index"] % max(1, len(banner_movies))
+banner_main = banner_movies[banner_index] if banner_movies else {"title": "Featured Movies", "genres": "Movies|Series"}
+banner_poster = fetch_banner_image_url(
+    str(banner_main.get("title", "")),
+    banner_main.get("poster_path") if isinstance(banner_main.get("poster_path"), str) else None,
+    TMDB_API_KEY or None,
+    size="original",
+)
+banner_desc = str(banner_main.get("description", "") or banner_main.get("overview", "")).strip()
+if banner_desc:
+    banner_desc = banner_desc[:170] + ("..." if len(banner_desc) > 170 else "")
+else:
+    banner_desc = "Live recommendations based on mood, voice, and your learning profile."
+banner_watch_url = fetch_watch_url(str(banner_main.get("title", "")), TMDB_API_KEY or None)
+st.markdown(
+    f"""
+    <a href="{banner_watch_url}" target="_blank" style="text-decoration:none;">
+    <div class='banner-panel' style="
+      background:
+        linear-gradient(90deg, rgba(8,30,42,0.34), rgba(8,30,42,0.06)),
+        linear-gradient(180deg, rgba(150,245,255,0.26), rgba(0,3,8,0.42)),
+        url('{banner_poster}') center/contain no-repeat;
+    ">
+      <div class='banner-content'>
+        <div class='banner-kicker'>Cinematic Mood Journey</div>
+        <div class='banner-title'>{str(banner_main.get('title','Featured Movies')).upper()}</div>
+        <div class='banner-sub'>{banner_desc}</div>
+      </div>
+    </div>
+    </a>
+    """,
+    unsafe_allow_html=True,
+)
 
 
 def render_detail_page(movie: dict[str, object], tmdb_api_key: Optional[str]):
@@ -349,23 +498,23 @@ def render_detail_page(movie: dict[str, object], tmdb_api_key: Optional[str]):
     media_type = str(movie.get("media_type", "movie")).strip().lower()
     watch_url = fetch_watch_url(str(movie.get("title", "")), tmdb_api_key, media_type=media_type)
     st.markdown("<div class='hero'>", unsafe_allow_html=True)
-    cols = st.columns([2, 3])
-    with cols[0]:
-        st.markdown(
-            f"<a href='{watch_url}' target='_blank'><img src='{poster}' style='width:100%;border-radius:12px;'></a>",
-            unsafe_allow_html=True,
-        )
-    with cols[1]:
-        st.markdown(f"<div class='hero-title'>{movie.get('title','Untitled')}</div>", unsafe_allow_html=True)
-        rating_val = tmdb_info.get("rating") if tmdb_info else movie.get("rating", 0)
-        st.markdown(render_star_rating(rating_val), unsafe_allow_html=True)
-        desc = tmdb_info.get("overview") if tmdb_info else ""
-        if not desc:
-            desc = movie.get("description", "") or movie.get("overview", "")
-        if desc:
-            st.write(desc)
-        st.markdown(f"**Genres:** {movie.get('genres', '')}")
-        st.markdown(f"**Director:** {movie.get('director', '')}")
+    st.markdown(
+        f"<a href='{watch_url}' target='_blank'><img src='{poster}' style='width:100%;max-width:420px;border-radius:12px;'></a>",
+        unsafe_allow_html=True,
+    )
+    st.markdown(
+        f"<div class='hero-title'><a href='{watch_url}' target='_blank' style='color:inherit;text-decoration:none;'>{movie.get('title','Untitled')}</a></div>",
+        unsafe_allow_html=True,
+    )
+    rating_val = tmdb_info.get("rating") if tmdb_info else movie.get("rating", 0)
+    st.markdown(render_star_rating(rating_val), unsafe_allow_html=True)
+    desc = tmdb_info.get("overview") if tmdb_info else ""
+    if not desc:
+        desc = movie.get("description", "") or movie.get("overview", "")
+    if desc:
+        st.write(desc)
+    st.markdown(f"**Genres:** {movie.get('genres', '')}")
+    st.markdown(f"**Director:** {movie.get('director', '')}")
     st.markdown("</div>", unsafe_allow_html=True)
 
     st.markdown("<div class='section-title'>Your Rating</div>", unsafe_allow_html=True)
@@ -510,54 +659,6 @@ def render_star_rating(rating_out_of_10: float) -> str:
     </div>
     """
 
-featured_list = _get_featured_new_releases(limit=6)
-if featured_list:
-    st.session_state.setdefault("hero_index", 0)
-    hero_index = st.session_state["hero_index"] % len(featured_list)
-    featured = featured_list[hero_index]
-    featured_poster = fetch_poster_url(
-        str(featured.get("title", "")),
-        featured.get("poster_path") if isinstance(featured.get("poster_path"), str) else None,
-        TMDB_API_KEY or None,
-        size="w1280",
-    )
-    dot_html = "<div class='hero-dots'>" + "".join(
-        f"<span class='hero-dot {'active' if i == hero_index else ''}'>●</span>"
-        for i in range(len(featured_list))
-    ) + "</div>"
-    st.markdown(dot_html, unsafe_allow_html=True)
-    st.markdown("<div class='hero'>", unsafe_allow_html=True)
-    hcols = st.columns([3, 2])
-    with hcols[0]:
-        st.markdown("<div class='hero-tag'>New Release</div>", unsafe_allow_html=True)
-        st.markdown(f"<div class='hero-title'>{featured.get('title','Untitled')}</div>", unsafe_allow_html=True)
-        tmdb_info = fetch_tmdb_info(str(featured.get("title", "")), TMDB_API_KEY or None)
-        rating_val = tmdb_info.get("rating") if tmdb_info else featured.get("rating", 0)
-        st.markdown(render_star_rating(rating_val), unsafe_allow_html=True)
-        st.write(featured.get("description", "") or featured.get("overview", ""))
-        st.markdown(f"**Genres:** {featured.get('genres', '')}")
-        st.markdown(f"**Director:** {featured.get('director', '')}")
-    with hcols[1]:
-        featured_watch_url = fetch_watch_url(str(featured.get("title", "")), TMDB_API_KEY or None)
-        st.markdown(
-            f"<a href='{featured_watch_url}' target='_blank'><img src='{featured_poster}' style='width:100%;border-radius:12px;'></a>",
-            unsafe_allow_html=True,
-        )
-    st.markdown("</div>", unsafe_allow_html=True)
-
-st.markdown("<div class='section-title'>Filter by Genres</div>", unsafe_allow_html=True)
-all_genres = _get_all_genres()
-selected_genres = []
-if all_genres:
-    with st.expander("Choose genres", expanded=True):
-        cols = st.columns(3)
-        for i, g in enumerate(all_genres):
-            with cols[i % 3]:
-                if st.checkbox(g, key=f"genre-{g}"):
-                    selected_genres.append(g)
-else:
-    st.info("No genres found in local data.")
-
 if "favorites" not in st.session_state:
     st.session_state["favorites"] = []
 
@@ -573,7 +674,7 @@ if mode == "Mood Based":
     if not st.session_state["private_scan_allowed"]:
         st.subheader("Private Mood Scan")
         st.caption("Allow once. After that, mood scanning runs automatically in backend.")
-        if st.button("Allow and start ", use_container_width=True):
+        if st.button("Allow and start", use_container_width=True):
             st.session_state["private_scan_allowed"] = True 
             st.rerun() 
     else:
@@ -591,6 +692,16 @@ if mode == "Mood Based":
                 final_details = detect_multimodal_mood_backend(voice_duration_sec=3.0)
             except RuntimeError:
                 final_details = None
+
+            if final_details:
+                spoken_text = str(final_details.get("spoken_text", "")).strip()
+                if spoken_text:
+                    st.session_state["last_voice_transcript"] = spoken_text
+                    matched = _resolve_voice_title(spoken_text, _apply_content_filter(load_movies()))
+                    if matched:
+                        st.session_state["voice_title_query"] = matched
+                    else:
+                        st.session_state["voice_title_query"] = spoken_text
 
             mood = final_details["mood"] if final_details else None
             if mood:
@@ -615,31 +726,27 @@ if mode == "Mood Based":
 
 # auto-search on input/genre selection (no button)
 detected_mood = st.session_state.get("detected_mood")
-if mode == "Mood Based" and detected_mood:
+voice_title = str(st.session_state.get("voice_title_query", "")).strip()
+title = str(typed_title or "").strip() or voice_title
+if voice_title and not str(typed_title or "").strip():
+    st.caption(f"Voice movie request: **{voice_title}**")
+
+if title:
     base = _apply_content_filter(load_movies())
-    genres = MOOD_TO_GENRES.get(detected_mood, [])
-    if genres:
-        if title:
-            title_matches = base[base["title"].str.contains(title, case=False, na=False)]
-            mask = title_matches["genres"].fillna("").str.lower().apply(
-                lambda x: any(g.lower() in x for g in genres)
-            )
-            matches = title_matches[mask]
-        else:
-            mask = base["genres"].fillna("").str.lower().apply(
-                lambda x: any(g.lower() in x for g in genres)
-            )
-            matches = base[mask]
-        if matches.empty:
-            results = []
-        else:
-            if "rating" in matches.columns:
-                matches["rating"] = pd.to_numeric(matches["rating"], errors="coerce")
-                matches = matches.sort_values(by="rating", ascending=False)
-            results = matches.head(NUM).to_dict(orient="records")
-            results = rerank_results_for_learning(results, detected_mood)
+    exact = base[base["title"].fillna("").str.lower() == title.lower()]
+    if exact.empty:
+        matches = base[base["title"].fillna("").str.contains(title, case=False, na=False)]
     else:
+        matches = exact
+    if matches.empty:
         results = []
+    else:
+        if "rating" in matches.columns:
+            matches["rating"] = pd.to_numeric(matches["rating"], errors="coerce")
+            matches = matches.sort_values(by="rating", ascending=False)
+        results = matches.head(NUM).to_dict(orient="records")
+        if detected_mood:
+            results = rerank_results_for_learning(results, detected_mood)
 elif selected_genres:
     df = _apply_content_filter(load_movies())
     mask = df["genres"].fillna("").str.lower().apply(
@@ -653,14 +760,39 @@ elif selected_genres:
             matches["rating"] = pd.to_numeric(matches["rating"], errors="coerce")
             matches = matches.sort_values(by="rating", ascending=False)
         results = matches.head(NUM).to_dict(orient="records")
-elif title:
-    df = _apply_content_filter(load_movies())
-    matches = df[df['title'].str.contains(title, case=False, na=False)]
-    results = [] if matches.empty else matches.head(NUM).to_dict(orient='records')
+elif mode == "Mood Based" and detected_mood:
+    base = _apply_content_filter(load_movies())
+    genres = MOOD_TO_GENRES.get(detected_mood, [])
+    if genres:
+        mask = base["genres"].fillna("").str.lower().apply(
+            lambda x: any(g.lower() in x for g in genres)
+        )
+        matches = base[mask]
+        if matches.empty:
+            results = []
+        else:
+            if "rating" in matches.columns:
+                matches["rating"] = pd.to_numeric(matches["rating"], errors="coerce")
+                matches = matches.sort_values(by="rating", ascending=False)
+            results = matches.head(NUM).to_dict(orient="records")
+            results = rerank_results_for_learning(results, detected_mood)
+    else:
+        results = []
 else:
     results = []
 
-if mode == "Mood Based" and detected_mood:
+if title:
+    if not results:
+        st.info("No local matches for that title. Try another name.")
+    else:
+        per_row = 3
+        rows = [results[i:i+per_row] for i in range(0, len(results), per_row)]
+        for row in rows:
+            cols = st.columns(len(row))
+            for c, r in zip(cols, row):
+                with c:
+                    show_movie_card(r, TMDB_API_KEY or None)
+elif mode == "Mood Based" and detected_mood:
     if not results:
         st.info("No movies found for the detected mood. Try a different title or re-scan.")
     else:
@@ -674,17 +806,6 @@ if mode == "Mood Based" and detected_mood:
 elif selected_genres:
     if not results:
         st.info("No movies found for the selected genres. Try different genres.")
-    else:
-        per_row = 3
-        rows = [results[i:i+per_row] for i in range(0, len(results), per_row)]
-        for row in rows:
-            cols = st.columns(len(row))
-            for c, r in zip(cols, row):
-                with c:
-                    show_movie_card(r, TMDB_API_KEY or None)
-elif title:
-    if not results:
-        st.info("No local matches for that title. Try running the scraper to refresh data.")
     else:
         per_row = 3
         rows = [results[i:i+per_row] for i in range(0, len(results), per_row)]
@@ -729,9 +850,14 @@ if st.session_state.get("favorites"):
 
 if mode == "Mood Based":
     summary = learning_summary()
+    progress = learning_progress(target_events=200)
     st.caption(
         f"Learning events: {summary.get('feedback_events', 0)} | Mood history: {summary.get('mood_counts', {})}"
     )
+    st.caption(
+        f"Model training progress: {progress.get('progress_pct', 0.0):.1f}% ({progress.get('events', 0)}/{progress.get('target_events', 200)}) • Stage: {progress.get('stage', 'cold-start')}"
+    )
+    st.progress(min(1.0, float(progress.get("progress_pct", 0.0)) / 100.0))
 
 # Manual refresh button
 st.sidebar.markdown("---")
