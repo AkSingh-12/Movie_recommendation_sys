@@ -4,8 +4,6 @@ from typing import Optional
 from pathlib import Path
 import json
 import io
-from difflib import get_close_matches
-import re
 import sys
 import os
 import time
@@ -29,7 +27,7 @@ from src.config import TMDB_API_KEY as DEFAULT_TMDB_KEY
 from src.data__loader import load_movies, set_poster_for_title
 from src.recomender import MOOD_TO_GENRES
 from src.scraper import scrape_top_n_movies
-from src.user_store import learning_progress, learning_summary, record_feedback, rerank_results_for_learning
+from src.user_store import learning_summary, record_feedback, rerank_results_for_learning
 from src.multimodal_mood import (
     detect_multimodal_mood_backend,
 )
@@ -53,133 +51,63 @@ st.set_page_config(page_title="Flimi Duniya", layout="wide")
 st.markdown(
     """
     <style>
-    @import url('https://fonts.googleapis.com/css2?family=Bebas+Neue&family=Manrope:wght@400;500;700;800&display=swap');
+    @import url('https://fonts.googleapis.com/css2?family=Unbounded:wght@400;600;700&family=Space+Grotesk:wght@400;500;600&display=swap');
     :root {
-        --bg-1: #02070a;
-        --bg-2: #061116;
-        --accent: #47f5ff;
-        --accent-soft: #1cc5d0;
-        --card: #091219;
-        --card-2: #0d1b24;
-        --text: #e9f6ff;
-        --muted: #9fb9c6;
-        --line: #1b323e;
-        --soft-glow: rgba(71,245,255,0.18);
+        --bg-1: #0b0b0f;
+        --bg-2: #14141b;
+        --accent: #ff2d55;
+        --accent-soft: #ff4d6d;
+        --card: #16161d;
+        --card-2: #1c1c24;
+        --text: #f2f2f3;
+        --muted: #b0b3c2;
+        --line: #232330;
     }
     .stApp {
         background:
-            radial-gradient(1200px 800px at 85% 0%, rgba(71,245,255,0.16), transparent 60%),
-            radial-gradient(900px 700px at 10% 20%, rgba(28,197,208,0.10), transparent 55%),
+            radial-gradient(1200px 800px at 85% 0%, rgba(255,45,85,0.20), transparent 60%),
+            radial-gradient(900px 700px at 10% 20%, rgba(255,77,109,0.12), transparent 55%),
             linear-gradient(180deg, var(--bg-1), var(--bg-2));
         color: var(--text);
-        font-family: "Manrope", system-ui, -apple-system, sans-serif;
+        font-family: "Space Grotesk", system-ui, -apple-system, sans-serif;
     }
     h1, h2, h3, h4 {
-        font-family: "Bebas Neue", system-ui, -apple-system, sans-serif;
-        letter-spacing: 0.08em;
+        font-family: "Unbounded", system-ui, -apple-system, sans-serif;
+        letter-spacing: 0.02em;
     }
-    .block-container {padding-top: 12px; padding-bottom: 80px;}
+    .block-container {padding-top: 24px; padding-bottom: 80px;}
     .stMarkdown, .stTextInput label, .stSlider label, .stCheckbox label {color: var(--text);}
-    .stTextInput > div > div {
-        background:
-            radial-gradient(900px 400px at 80% 0%, rgba(71,245,255,0.08), transparent 60%),
-            linear-gradient(180deg, var(--bg-1), var(--bg-2));
-        border: 1px solid var(--line);
-        border-radius: 14px;
-    }
     .stTextInput > div > div > input {
-        background: transparent;
-        border: 0;
+        background: var(--card-2);
+        border: 1px solid var(--line);
         color: var(--text);
-        border-radius: 14px;
-        font-size: 17px;
+        border-radius: 12px;
     }
     .stButton > button {
-        background: linear-gradient(90deg, #18b3bd, #47f5ff);
-        color: #001216;
-        border: 1px solid rgba(71,245,255,0.6);
-        border-radius: 999px;
+        background: linear-gradient(90deg, var(--accent), var(--accent-soft));
+        color: white;
+        border: 0;
+        border-radius: 12px;
         padding: 10px 16px;
-        font-weight: 800;
-        letter-spacing: 0.03em;
+        font-weight: 600;
     }
-    .stButton > button:hover {
-        filter: brightness(1.08);
-        box-shadow: 0 0 20px var(--soft-glow);
+    .stButton > button:hover {filter: brightness(1.05);}
+    .app-shell {max-width: 1200px; margin: 0 auto;}
+    .topbar {
+        display:flex; align-items:center; justify-content:space-between;
+        background: rgba(10,10,14,0.6);
+        border:1px solid var(--line);
+        padding: 14px 20px; border-radius: 18px; margin-bottom: 24px;
+        backdrop-filter: blur(8px);
     }
-    .app-shell {max-width: 1240px; margin: 0 auto;}
-    .topbar-glass {
-        border: 1px solid var(--line);
-        border-radius: 16px;
-        padding: 14px 18px;
-        background: linear-gradient(90deg, rgba(4,10,14,0.90), rgba(8,18,23,0.86));
-        backdrop-filter: blur(6px);
-        margin-bottom: 14px;
-    }
-    .brand {font-size: 30px; font-family: "Bebas Neue", sans-serif; letter-spacing: 0.05em;}
+    .brand {font-size: 20px; font-weight: 700;}
     .brand span {color: var(--accent);}
-    .top-links {
-        display:flex; gap:16px; justify-content:center; align-items:center;
-        color: #d3f8ff; font-size:12px; letter-spacing:0.16em; text-transform:uppercase; font-weight:700;
-    }
-    .banner-panel {
-        position: relative;
-        min-height: 420px;
-        border-radius: 24px;
-        border: 1px solid rgba(173,240,255,0.25);
-        overflow: hidden;
-        margin-bottom: 18px;
-        background:
-          linear-gradient(90deg, rgba(0,10,14,0.78), rgba(0,10,14,0.25)),
-          linear-gradient(180deg, rgba(0,6,10,0.15), rgba(0,3,8,0.8));
-        box-shadow: 0 26px 70px rgba(0,0,0,0.48);
-    }
-    .banner-content {
-        position:absolute;
-        left: 24px;
-        bottom: 26px;
-        max-width: 58%;
-    }
-    .banner-kicker {
-        color: #7cefff;
-        letter-spacing: 0.20em;
-        font-size: 11px;
-        text-transform: uppercase;
-        margin-bottom: 8px;
-        font-weight: 700;
-    }
-    .banner-title {
-        color: #67f2ff;
-        font-size: 62px;
-        line-height: 0.9;
-        text-transform: uppercase;
-        margin: 0 0 8px 0;
-        font-family: "Bebas Neue", sans-serif;
-        text-shadow: 0 0 24px rgba(71,245,255,0.22);
-    }
-    .banner-sub {
-        color: #d2e8f0;
-        font-size: 14px;
-        line-height: 1.45;
-        max-width: 540px;
-    }
-    .banner-step {
-        position:absolute;
-        right:20px;
-        top:20px;
-        color: #d9fbff;
-        font-size: 11px;
-        letter-spacing: 0.18em;
-        text-transform: uppercase;
-        text-align:right;
-        line-height:1.8;
-        opacity: 0.8;
-    }
+    .top-links {display:flex; gap:18px; color: var(--muted); font-weight: 500;}
     .hero {
         border:1px solid var(--line);
         background:
-            radial-gradient(500px 400px at 85% 20%, rgba(71,245,255,0.28), transparent 60%),
-            linear-gradient(120deg, rgba(8,15,21,0.92), rgba(4,10,14,0.92));
+            radial-gradient(500px 400px at 85% 20%, rgba(255,45,85,0.35), transparent 60%),
+            linear-gradient(120deg, rgba(20,20,27,0.9), rgba(12,12,16,0.9));
         border-radius: 22px;
         padding: 22px;
         box-shadow: 0 24px 60px rgba(0,0,0,0.35);
@@ -187,10 +115,10 @@ st.markdown(
     }
     .hero-tag {
         display:inline-block; font-size:12px; font-weight:600; letter-spacing:0.08em;
-        text-transform:uppercase; color:#d9fbff; background:#0a1c26;
-        border:1px solid #245262; padding:4px 10px; border-radius:999px; margin-bottom:10px;
+        text-transform:uppercase; color:#ffe2e8; background:#2a121a;
+        border:1px solid #5a1d2b; padding:4px 10px; border-radius:999px; margin-bottom:10px;
     }
-    .hero-title {font-size: 44px; margin: 0 0 8px 0; line-height: 0.95;}
+    .hero-title {font-size: 32px; margin: 0 0 8px 0;}
     .hero-meta {color: var(--muted); font-size: 13px; margin-bottom: 12px;}
     .movie-card {
         border:1px solid var(--line);
@@ -198,68 +126,16 @@ st.markdown(
         padding:12px; border-radius:16px;
         box-shadow: 0 10px 24px rgba(0,0,0,0.30);
     }
-    .movie-title {margin: 10px 0 6px 0; color: #dffcff;}
-    .section-title {
-        font-size: 34px;
-        margin: 14px 0 8px 0;
-        color: #73f4ff;
-        letter-spacing: 0.10em;
-        text-transform: uppercase;
-    }
+    .movie-title {margin: 10px 0 6px 0;}
+    .section-title {font-size: 22px; margin: 10px 0 8px 0;}
     .hero-dots {text-align: right; font-size: 14px; margin-bottom: 6px;}
-    .hero-dot {color:#2a5565; margin-left:4px;}
+    .hero-dot {color:#4a4a57; margin-left:4px;}
     .hero-dot.active {color: var(--accent);}
     .rating-stars {display:flex; align-items:center; gap:8px; margin: 6px 0 8px 0;}
     .stars {letter-spacing:2px; font-size:16px;}
     .star-on {color:#ffb703;}
-    .star-off {color:#245465;}
-    .rating-badge {background:#07121a; border:1px solid var(--line); padding:6px 10px; border-radius:10px; font-weight:600;}
-    .genre-strip {
-        border: 1px solid var(--line);
-        background:
-            radial-gradient(1200px 800px at 85% 0%, rgba(71,245,255,0.16), transparent 60%),
-            radial-gradient(900px 700px at 10% 20%, rgba(28,197,208,0.10), transparent 55%),
-            linear-gradient(180deg, var(--bg-1), var(--bg-2));
-        border-radius: 16px;
-        padding: 7px 12px;
-        margin: 10px 0 10px 0;
-        max-height: 86px;
-        overflow-y: auto;
-    }
-    .strip-title {
-        font-size: 11px;
-        color: #8defff;
-        letter-spacing: 0.16em;
-        text-transform: uppercase;
-        margin: 0 0 4px 0;
-        font-weight: 700;
-    }
-    .genre-strip [data-testid="stMultiSelect"] {margin-bottom: 0;}
-    .genre-strip [data-baseweb="tag"] {font-size: 11px;}
-    .genre-strip [data-baseweb="select"] > div {
-        background:
-            radial-gradient(1200px 800px at 85% 0%, rgba(71,245,255,0.16), transparent 60%),
-            radial-gradient(900px 700px at 10% 20%, rgba(28,197,208,0.10), transparent 55%),
-            linear-gradient(180deg, var(--bg-1), var(--bg-2)) !important;
-        border-color: var(--line) !important;
-    }
-    .genre-strip [data-baseweb="select"] input {
-        color: var(--text) !important;
-    }
-    .genre-strip [data-baseweb="tag"] {
-        background: rgba(22, 45, 56, 0.75) !important;
-        color: var(--text) !important;
-        border: 1px solid var(--line) !important;
-    }
-    .genre-note {
-        color: var(--muted);
-        font-size: 11px;
-        margin-bottom: 4px;
-    }
-    @media (max-width: 900px) {
-        .banner-content {max-width: 90%; left:16px; bottom:16px;}
-        .banner-title {font-size: 44px;}
-    }
+    .star-off {color:#3a3a45;}
+    .rating-badge {background:#101018; border:1px solid var(--line); padding:6px 10px; border-radius:10px; font-weight:600;}
     </style>
     """,
     unsafe_allow_html=True,
@@ -274,7 +150,6 @@ except Exception:
 default_key = secrets_key or (
     DEFAULT_TMDB_KEY if DEFAULT_TMDB_KEY and DEFAULT_TMDB_KEY != "785c5f1bd5e3e823f06abdfe6168588e" else ""
 )
-
 tmdb_input = st.sidebar.text_input("TMDB API key", type="password", value=default_key)
 TMDB_API_KEY = (tmdb_input or "").strip()
 if TMDB_API_KEY:
@@ -353,65 +228,6 @@ def fetch_watch_url(
     if not title_str:
         return "https://www.netflix.com"
     return f"https://www.netflix.com/search?q={quote_plus(title_str)}"
-
-
-@st.cache_data(ttl=60 * 60)
-def fetch_banner_image_url(
-    title: Optional[str],
-    poster_path: Optional[str],
-    banner_path: Optional[str],
-    movie_id: Optional[object],
-    tmdb_api_key: Optional[str],
-    size: str = "w1280",
-) -> str:
-    """Prefer TMDB backdrop via movie_id, then title search, then poster."""
-    banner_str = (banner_path or "").strip()
-    if banner_str:
-        # Accept only movie-image sources (TMDB path or TMDB image CDN URL).
-        if banner_str.startswith("/"):
-            return f"https://image.tmdb.org/t/p/{size}{banner_str}"
-        if "image.tmdb.org" in banner_str:
-            return banner_str
-
-    title_str = (title or "").strip()
-
-    if tmdb_api_key and title_str:
-        # Prefer exact movie by TMDB id to avoid wrong backdrop matches.
-        try:
-            mid = int(float(movie_id)) if movie_id is not None and str(movie_id).strip() else None
-        except (TypeError, ValueError):
-            mid = None
-        if mid:
-            try:
-                details_resp = requests.get(
-                    f"https://api.themoviedb.org/3/movie/{mid}",
-                    params={"api_key": tmdb_api_key},
-                    timeout=6,
-                )
-                details_resp.raise_for_status()
-                details = details_resp.json() or {}
-                backdrop = details.get("backdrop_path")
-                if backdrop:
-                    return f"https://image.tmdb.org/t/p/{size}{backdrop}"
-            except Exception:
-                pass
-
-        try:
-            url = "https://api.themoviedb.org/3/search/movie"
-            resp = requests.get(
-                url,
-                params={"api_key": tmdb_api_key, "query": title_str, "page": 1},
-                timeout=6,
-            )
-            resp.raise_for_status()
-            results = resp.json().get("results") or []
-            if results:
-                backdrop_path = results[0].get("backdrop_path")
-                if backdrop_path:
-                    return f"https://image.tmdb.org/t/p/{size}{backdrop_path}"
-        except Exception:
-            pass
-    return fetch_poster_url(title_str, poster_path, tmdb_api_key, size="w780")
 
 
 def show_movie_card(movie: dict[str, object], tmdb_api_key: Optional[str]):
@@ -500,135 +316,19 @@ def _apply_content_filter(df: pd.DataFrame) -> pd.DataFrame:
     return df[mt.isin(allowed)]
 
 
-def _resolve_voice_title(spoken_text: str, df: pd.DataFrame) -> Optional[str]:
-    text = str(spoken_text or "").strip()
-    if not text or df.empty or "title" not in df.columns:
-        return None
-
-    lowered = text.lower()
-    for noise in [
-        "play", "show", "search", "movie", "film", "recommend", "please",
-        "for me", "watch", "find", "suggest",
-    ]:
-        lowered = lowered.replace(noise, " ")
-    lowered = re.sub(r"[^a-z0-9\s]", " ", lowered)
-    lowered = re.sub(r"\s+", " ", lowered).strip()
-    if not lowered:
-        lowered = text.lower()
-
-    titles = df["title"].fillna("").astype(str).tolist()
-    contains = [t for t in titles if lowered in t.lower() or t.lower() in lowered]
-    if contains:
-        return contains[0]
-    close = get_close_matches(lowered, [t.lower() for t in titles], n=1, cutoff=0.42)
-    if close:
-        key = close[0]
-        for t in titles:
-            if t.lower() == key:
-                return t
-    close = get_close_matches(text, titles, n=1, cutoff=0.42)
-    return close[0] if close else None
-
-
 st.markdown("<div class='app-shell'>", unsafe_allow_html=True)
-st.markdown("<div class='topbar-glass'>", unsafe_allow_html=True)
-nav_left, nav_mid, nav_right = st.columns([2, 5, 3])
-with nav_left:
+topbar_left, topbar_mid, topbar_right = st.columns([2, 5, 3])
+with topbar_left:
     st.markdown("<div class='brand'>Filmi <span>Duniya</span></div>", unsafe_allow_html=True)
-with nav_mid:
+with topbar_mid:
     st.markdown(
         "<div class='top-links'>Movies <span>•</span> Series <span>•</span> TV Shows</div>",
         unsafe_allow_html=True,
     )
-with nav_right:
-    typed_title = st.text_input("Search", placeholder="Search movies", label_visibility="collapsed", key="search_title")
-st.markdown("</div>", unsafe_allow_html=True)
+with topbar_right:
+    title = st.text_input("Search", placeholder="Search movies", label_visibility="collapsed")
 
-all_genres = _get_all_genres()
-if all_genres:
-    st.markdown("<div class='genre-strip'>", unsafe_allow_html=True)
-    st.markdown("<div class='strip-title'>Filter Lane</div>", unsafe_allow_html=True)
-    st.markdown("<div class='genre-note'>Choose one or more genres to focus the stream.</div>", unsafe_allow_html=True)
-    selected_genres = st.multiselect(
-        "Genres",
-        options=all_genres,
-        default=[],
-        label_visibility="collapsed",
-        placeholder="Filter recommendations by genres...",
-    )
-    st.markdown("</div>", unsafe_allow_html=True)
-else:
-    selected_genres = []
-
-banner_df = _apply_content_filter(load_movies())
-banner_movies: list[dict] = []
-if not banner_df.empty:
-    ranked = banner_df.copy()
-    if "popularity" in ranked.columns:
-        ranked["popularity"] = pd.to_numeric(ranked["popularity"], errors="coerce")
-        ranked = ranked.sort_values(by="popularity", ascending=False)
-    elif "rating" in ranked.columns:
-        ranked["rating"] = pd.to_numeric(ranked["rating"], errors="coerce")
-        ranked = ranked.sort_values(by="rating", ascending=False)
-    banner_movies = ranked.head(6).to_dict(orient="records")
-
-st.session_state.setdefault("hero_index", 0)
-banner_index = st.session_state["hero_index"] % max(1, len(banner_movies))
-banner_main = banner_movies[banner_index] if banner_movies else {"title": "Featured Movies", "genres": "Movies|Series"}
-banner_poster = fetch_banner_image_url(
-    str(banner_main.get("title", "")),
-    banner_main.get("poster_path") if isinstance(banner_main.get("poster_path"), str) else None,
-    banner_main.get("banner_path") if isinstance(banner_main.get("banner_path"), str) else None,
-    banner_main.get("movie_id"),
-    TMDB_API_KEY or None,
-    size="original",
-)
-banner_subtitles = " • ".join(
-    [
-        str(m.get("title", ""))
-        for i, m in enumerate(banner_movies)
-        if i != banner_index and str(m.get("title", "")).strip()
-    ][:2]
-)
-if not banner_subtitles:
-    banner_subtitles = "Live recommendations based on mood, voice, and your learning profile."
-banner_desc = str(banner_main.get("description", "") or banner_main.get("overview", "")).strip()
-if banner_desc:
-    banner_desc = banner_desc[:170] + ("..." if len(banner_desc) > 170 else "")
-else:
-    banner_desc = "Live recommendations based on mood, voice, and your learning profile."
-banner_director = str(banner_main.get("director", "") or "Unknown")
-banner_genres = str(banner_main.get("genres", "") or "Movies|Series")
-try:
-    banner_rating = f"{float(banner_main.get('rating', 0.0)):.1f}"
-except (TypeError, ValueError):
-    banner_rating = "NA"
-banner_watch_url = fetch_watch_url(str(banner_main.get("title", "")), TMDB_API_KEY or None)
-
-st.markdown(
-    f"""
-    <a href="{banner_watch_url}" target="_blank" style="text-decoration:none;">
-    <div class='banner-panel' style="
-      background:
-        linear-gradient(90deg, rgba(2,14,20,0.56), rgba(2,14,20,0.10)),
-        linear-gradient(180deg, rgba(120,235,255,0.14), rgba(0,3,8,0.56)),
-        url('{banner_poster}') center/contain no-repeat;
-    ">
-      <div class='banner-step'>01<br>02<br><strong>03</strong><br>04</div>
-      <div class='banner-content'>
-        <div class='banner-kicker'>Cinematic Mood Journey</div>
-        <div class='banner-title'>{str(banner_main.get('title','Featured Movies')).upper()}</div>
-        <div class='banner-sub'>
-          {banner_desc}<br>
-          Genres: {banner_genres} • Director: {banner_director} • Rating: {banner_rating}/10<br>
-          {banner_subtitles}
-        </div>
-      </div>
-    </div>
-    </a>
-    """,
-    unsafe_allow_html=True,
-)
+st.markdown("Discover new releases and personalized recommendations.")
 
 st.session_state.setdefault("page", "home")
 st.session_state.setdefault("user_ratings", {})
@@ -810,6 +510,54 @@ def render_star_rating(rating_out_of_10: float) -> str:
     </div>
     """
 
+featured_list = _get_featured_new_releases(limit=6)
+if featured_list:
+    st.session_state.setdefault("hero_index", 0)
+    hero_index = st.session_state["hero_index"] % len(featured_list)
+    featured = featured_list[hero_index]
+    featured_poster = fetch_poster_url(
+        str(featured.get("title", "")),
+        featured.get("poster_path") if isinstance(featured.get("poster_path"), str) else None,
+        TMDB_API_KEY or None,
+        size="w1280",
+    )
+    dot_html = "<div class='hero-dots'>" + "".join(
+        f"<span class='hero-dot {'active' if i == hero_index else ''}'>●</span>"
+        for i in range(len(featured_list))
+    ) + "</div>"
+    st.markdown(dot_html, unsafe_allow_html=True)
+    st.markdown("<div class='hero'>", unsafe_allow_html=True)
+    hcols = st.columns([3, 2])
+    with hcols[0]:
+        st.markdown("<div class='hero-tag'>New Release</div>", unsafe_allow_html=True)
+        st.markdown(f"<div class='hero-title'>{featured.get('title','Untitled')}</div>", unsafe_allow_html=True)
+        tmdb_info = fetch_tmdb_info(str(featured.get("title", "")), TMDB_API_KEY or None)
+        rating_val = tmdb_info.get("rating") if tmdb_info else featured.get("rating", 0)
+        st.markdown(render_star_rating(rating_val), unsafe_allow_html=True)
+        st.write(featured.get("description", "") or featured.get("overview", ""))
+        st.markdown(f"**Genres:** {featured.get('genres', '')}")
+        st.markdown(f"**Director:** {featured.get('director', '')}")
+    with hcols[1]:
+        featured_watch_url = fetch_watch_url(str(featured.get("title", "")), TMDB_API_KEY or None)
+        st.markdown(
+            f"<a href='{featured_watch_url}' target='_blank'><img src='{featured_poster}' style='width:100%;border-radius:12px;'></a>",
+            unsafe_allow_html=True,
+        )
+    st.markdown("</div>", unsafe_allow_html=True)
+
+st.markdown("<div class='section-title'>Filter by Genres</div>", unsafe_allow_html=True)
+all_genres = _get_all_genres()
+selected_genres = []
+if all_genres:
+    with st.expander("Choose genres", expanded=True):
+        cols = st.columns(3)
+        for i, g in enumerate(all_genres):
+            with cols[i % 3]:
+                if st.checkbox(g, key=f"genre-{g}"):
+                    selected_genres.append(g)
+else:
+    st.info("No genres found in local data.")
+
 if "favorites" not in st.session_state:
     st.session_state["favorites"] = []
 
@@ -825,9 +573,9 @@ if mode == "Mood Based":
     if not st.session_state["private_scan_allowed"]:
         st.subheader("Private Mood Scan")
         st.caption("Allow once. After that, mood scanning runs automatically in backend.")
-        if st.button("Allow and start", use_container_width=True):
+        if st.button("Allow and start ", use_container_width=True):
             st.session_state["private_scan_allowed"] = True 
-            st.rerun()
+            st.rerun() 
     else:
         now = time.time()
         should_scan = (
@@ -843,16 +591,6 @@ if mode == "Mood Based":
                 final_details = detect_multimodal_mood_backend(voice_duration_sec=3.0)
             except RuntimeError:
                 final_details = None
-
-            if final_details:
-                spoken_text = str(final_details.get("spoken_text", "")).strip()
-                if spoken_text:
-                    st.session_state["last_voice_transcript"] = spoken_text
-                    matched = _resolve_voice_title(spoken_text, _apply_content_filter(load_movies()))
-                    if matched:
-                        st.session_state["voice_title_query"] = matched
-                    else:
-                        st.session_state["voice_title_query"] = spoken_text
 
             mood = final_details["mood"] if final_details else None
             if mood:
@@ -877,28 +615,31 @@ if mode == "Mood Based":
 
 # auto-search on input/genre selection (no button)
 detected_mood = st.session_state.get("detected_mood")
-voice_title = str(st.session_state.get("voice_title_query", "")).strip()
-title = str(typed_title or "").strip() or voice_title
-
-if voice_title and not str(typed_title or "").strip():
-    st.caption(f"Voice movie request: **{voice_title}**")
-
-if title:
+if mode == "Mood Based" and detected_mood:
     base = _apply_content_filter(load_movies())
-    exact = base[base["title"].fillna("").str.lower() == title.lower()]
-    if exact.empty:
-        matches = base[base["title"].fillna("").str.contains(title, case=False, na=False)]
-    else:
-        matches = exact
-    if matches.empty:
-        results = []
-    else:
-        if "rating" in matches.columns:
-            matches["rating"] = pd.to_numeric(matches["rating"], errors="coerce")
-            matches = matches.sort_values(by="rating", ascending=False)
-        results = matches.head(NUM).to_dict(orient="records")
-        if detected_mood:
+    genres = MOOD_TO_GENRES.get(detected_mood, [])
+    if genres:
+        if title:
+            title_matches = base[base["title"].str.contains(title, case=False, na=False)]
+            mask = title_matches["genres"].fillna("").str.lower().apply(
+                lambda x: any(g.lower() in x for g in genres)
+            )
+            matches = title_matches[mask]
+        else:
+            mask = base["genres"].fillna("").str.lower().apply(
+                lambda x: any(g.lower() in x for g in genres)
+            )
+            matches = base[mask]
+        if matches.empty:
+            results = []
+        else:
+            if "rating" in matches.columns:
+                matches["rating"] = pd.to_numeric(matches["rating"], errors="coerce")
+                matches = matches.sort_values(by="rating", ascending=False)
+            results = matches.head(NUM).to_dict(orient="records")
             results = rerank_results_for_learning(results, detected_mood)
+    else:
+        results = []
 elif selected_genres:
     df = _apply_content_filter(load_movies())
     mask = df["genres"].fillna("").str.lower().apply(
@@ -912,39 +653,14 @@ elif selected_genres:
             matches["rating"] = pd.to_numeric(matches["rating"], errors="coerce")
             matches = matches.sort_values(by="rating", ascending=False)
         results = matches.head(NUM).to_dict(orient="records")
-elif mode == "Mood Based" and detected_mood:
-    base = _apply_content_filter(load_movies())
-    genres = MOOD_TO_GENRES.get(detected_mood, [])
-    if genres:
-        mask = base["genres"].fillna("").str.lower().apply(
-            lambda x: any(g.lower() in x for g in genres)
-        )
-        matches = base[mask]
-        if matches.empty:
-            results = []
-        else:
-            if "rating" in matches.columns:
-                matches["rating"] = pd.to_numeric(matches["rating"], errors="coerce")
-                matches = matches.sort_values(by="rating", ascending=False)
-            results = matches.head(NUM).to_dict(orient="records")
-            results = rerank_results_for_learning(results, detected_mood)
-    else:
-        results = []
+elif title:
+    df = _apply_content_filter(load_movies())
+    matches = df[df['title'].str.contains(title, case=False, na=False)]
+    results = [] if matches.empty else matches.head(NUM).to_dict(orient='records')
 else:
     results = []
 
-if title:
-    if not results:
-        st.info("No local matches for that title. Try another name.")
-    else:
-        per_row = 3
-        rows = [results[i:i+per_row] for i in range(0, len(results), per_row)]
-        for row in rows:
-            cols = st.columns(len(row))
-            for c, r in zip(cols, row):
-                with c:
-                    show_movie_card(r, TMDB_API_KEY or None)
-elif mode == "Mood Based" and detected_mood:
+if mode == "Mood Based" and detected_mood:
     if not results:
         st.info("No movies found for the detected mood. Try a different title or re-scan.")
     else:
@@ -958,6 +674,17 @@ elif mode == "Mood Based" and detected_mood:
 elif selected_genres:
     if not results:
         st.info("No movies found for the selected genres. Try different genres.")
+    else:
+        per_row = 3
+        rows = [results[i:i+per_row] for i in range(0, len(results), per_row)]
+        for row in rows:
+            cols = st.columns(len(row))
+            for c, r in zip(cols, row):
+                with c:
+                    show_movie_card(r, TMDB_API_KEY or None)
+elif title:
+    if not results:
+        st.info("No local matches for that title. Try running the scraper to refresh data.")
     else:
         per_row = 3
         rows = [results[i:i+per_row] for i in range(0, len(results), per_row)]
@@ -1002,14 +729,9 @@ if st.session_state.get("favorites"):
 
 if mode == "Mood Based":
     summary = learning_summary()
-    progress = learning_progress(target_events=200)
     st.caption(
         f"Learning events: {summary.get('feedback_events', 0)} | Mood history: {summary.get('mood_counts', {})}"
     )
-    st.caption(
-        f"Model training progress: {progress.get('progress_pct', 0.0):.1f}% ({progress.get('events', 0)}/{progress.get('target_events', 200)}) • Stage: {progress.get('stage', 'cold-start')}"
-    )
-    st.progress(min(1.0, float(progress.get("progress_pct", 0.0)) / 100.0))
 
 # Manual refresh button
 st.sidebar.markdown("---")
