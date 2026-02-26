@@ -24,9 +24,36 @@ STREAMLIT_PIDFILE="$RUNDIR/streamlit.pid"
 
 check_port() {
     local host=$1 port=$2
-    if ss -ltn "sport = :$port" | grep -q LISTEN; then
-        return 0
+    # Prefer active TCP connect check; avoids false positives when `ss`
+    # cannot access netlink in restricted environments.
+    if command -v nc >/dev/null 2>&1; then
+        if nc -z "$host" "$port" >/dev/null 2>&1; then
+            return 0
+        fi
+    elif command -v curl >/dev/null 2>&1; then
+        if curl -fsS --max-time 1 "http://$host:$port" >/dev/null 2>&1; then
+            return 0
+        fi
+    else
+        # Last-resort fallback to ss (suppress permission noise).
+        if ss -ltn "sport = :$port" 2>/dev/null | grep -q LISTEN; then
+            return 0
+        fi
     fi
+    return 1
+}
+
+wait_for_port() {
+    local host=$1 port=$2 name=$3
+    local retries=${4:-20}
+    local sleep_s=${5:-0.25}
+    for _ in $(seq 1 "$retries"); do
+        if check_port "$host" "$port"; then
+            return 0
+        fi
+        sleep "$sleep_s"
+    done
+    echo "$name failed to start on $host:$port"
     return 1
 }
 
@@ -43,6 +70,11 @@ start_uvicorn() {
     nohup "$VENV_PY" -m uvicorn src.api:app --host 127.0.0.1 --port 8000 > "$UVICORN_LOG" 2>&1 &
     echo $! > "$UVICORN_PIDFILE"
     echo "FastAPI PID $(cat $UVICORN_PIDFILE)"
+    if ! wait_for_port 127.0.0.1 8000 "FastAPI" 120 0.25; then
+        echo "Last backend logs:"
+        tail -n 60 "$UVICORN_LOG" || true
+        exit 1
+    fi
 }
 
 start_streamlit() {
@@ -54,6 +86,11 @@ start_streamlit() {
     nohup "$VENV_STREAMLIT" run web/app_streamlit.py --server.port 8501 --server.headless true > "$STREAMLIT_LOG" 2>&1 &
     echo $! > "$STREAMLIT_PIDFILE"
     echo "Streamlit PID $(cat $STREAMLIT_PIDFILE)"
+    if ! wait_for_port 127.0.0.1 8501 "Streamlit" 80 0.25; then
+        echo "Last streamlit logs:"
+        tail -n 80 "$STREAMLIT_LOG" || true
+        exit 1
+    fi
 }
 
 stop_pidfile() {

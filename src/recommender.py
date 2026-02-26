@@ -4,7 +4,14 @@ This project contains `src/recomender.py` (typo). Many files import
 `src.recommender` (double 'm'); create this thin wrapper to re-export
 the expected symbols so the app can run without renaming many files.
 """
-from .recomender import build_index, recommend_by_title, recommend_by_genre
+from .recomender import (
+	build_index,
+	genres_for_mood,
+	MOOD_TO_GENRES,
+	recommend_by_genre,
+	recommend_by_mood,
+	recommend_by_title,
+)
 import pandas as pd
 from typing import Any, Dict, Optional
 
@@ -31,3 +38,6 @@ def recommend(genre: str, n: int = 5, index: Optional[Dict[str, Any]] = None) ->
 
 __all__ = ["build_index", "recommend_by_title", "recommend"]
 __all__.append("recommend_by_genre")
+__all__.append("recommend_by_mood")
+__all__.append("MOOD_TO_GENRES")
+__all__.append("genres_for_mood")

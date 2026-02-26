@@ -9,7 +9,7 @@ Type=simple
 WorkingDirectory=/home/abhishek/movie_recommender
 Environment=PATH=/home/abhishek/movie_recommender/.venv/bin:/usr/bin:/bin
 Environment=TMDB_API_KEY=
-ExecStart=/home/abhishek/movie_recommender/.venv/bin/python -m src.scraper --n 200 --append --interval 3600
+ExecStart=/home/abhishek/movie_recommender/.venv/bin/python -m src.scraper --n 400 --append --include-tv --interval 86400
 Restart=on-failure
 RestartSec=10
 

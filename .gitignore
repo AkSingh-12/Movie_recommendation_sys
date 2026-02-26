@@ -16,3 +16,6 @@ build/
 .idea/
 logs/
 *.csv
+
+# Generated cache artifacts
+data/cache/tfidf_matrix.npy

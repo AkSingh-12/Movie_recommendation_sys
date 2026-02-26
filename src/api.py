@@ -64,6 +64,7 @@ def _scrape_dataset(force: bool = False) -> None:
             append=True,
             max_per_run=SCRAPER_MAX_PER_RUN,
             force=force,
+            include_tv=True,
         )
     except Exception as exc:
         logger.warning("Automatic scraper failed: %s", exc)
@@ -146,4 +147,3 @@ async def refresh() -> Dict[str, Any]:
     _refresh_index()
     ts = _INDEX_STATE.get("last_refresh")
     return {"status": "ok", "last_refresh": ts.isoformat() if ts else None}
-

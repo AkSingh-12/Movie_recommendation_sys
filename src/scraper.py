@@ -9,7 +9,7 @@ from pathlib import Path
 import time
 import logging
 import argparse
-from typing import List, Dict, Optional
+from typing import List, Dict, Optional, Tuple
 
 import requests
 from requests.adapters import HTTPAdapter
@@ -33,55 +33,104 @@ def _session_with_retries(total_retries: int = 3, backoff_factor: float = 0.3) -
     return s
 
 
-def fetch_popular_movies(page: int = 1, session: Optional[requests.Session] = None) -> Dict:
+def fetch_popular(page: int = 1, content_type: str = "movie", session: Optional[requests.Session] = None) -> Dict:
     if not TMDB_API_KEY or TMDB_API_KEY == "YOUR_TMDB_API_KEY_HERE":
         raise RuntimeError("TMDB_API_KEY is not set. Please set the TMDB_API_KEY environment variable.")
+    if content_type not in {"movie", "tv"}:
+        raise RuntimeError("content_type must be 'movie' or 'tv'")
     session = session or _session_with_retries()
-    url = f"{TMDB_BASE}/movie/popular"
+    url = f"{TMDB_BASE}/{content_type}/popular"
     params = {"api_key": TMDB_API_KEY, "language": "en-US", "page": page}
     r = session.get(url, params=params, timeout=10)
     r.raise_for_status()
     return r.json()
 
 
-def fetch_movie_details(movie_id: int, session: Optional[requests.Session] = None) -> Dict:
+def fetch_details(item_id: int, content_type: str = "movie", session: Optional[requests.Session] = None) -> Dict:
     if not TMDB_API_KEY or TMDB_API_KEY == "YOUR_TMDB_API_KEY_HERE":
         raise RuntimeError("TMDB_API_KEY is not set. Please set the TMDB_API_KEY environment variable.")
+    if content_type not in {"movie", "tv"}:
+        raise RuntimeError("content_type must be 'movie' or 'tv'")
     session = session or _session_with_retries()
-    url = f"{TMDB_BASE}/movie/{movie_id}"
+    url = f"{TMDB_BASE}/{content_type}/{item_id}"
     params = {"api_key": TMDB_API_KEY, "language": "en-US", "append_to_response": "credits"}
     r = session.get(url, params=params, timeout=10)
     r.raise_for_status()
     return r.json()
 
 
-def _normalize_detail(d: Dict) -> Dict:
+def _normalize_detail(d: Dict, content_type: str = "movie") -> Dict:
     genres = [g.get('name') for g in d.get('genres', []) if g.get('name')]
     director = ""
     cast = []
     credits = d.get('credits', {}) or {}
-    for c in credits.get('crew', []):
-        if c.get('job') == 'Director':
-            director = c.get('name') or ""
-            break
+    if content_type == "movie":
+        for c in credits.get('crew', []):
+            if c.get('job') == 'Director':
+                director = c.get('name') or ""
+                break
+    else:
+        created_by = d.get("created_by") or []
+        if created_by:
+            director = created_by[0].get("name") or ""
+        if not director:
+            for c in credits.get('crew', []):
+                if c.get('job') in {"Executive Producer", "Creator", "Director"}:
+                    director = c.get('name') or ""
+                    if director:
+                        break
     for c in credits.get('cast', [])[:10]:
         if c.get('name'):
             cast.append(c.get('name'))
 
+    raw_id = d.get("id")
+    normalized_id = f"{content_type}:{raw_id}" if raw_id is not None else ""
+    title = d.get("title") or d.get("name") or d.get("original_name") or ""
     return {
-        "movie_id": d.get("id"),
-        "title": d.get("title") or "",
+        "movie_id": normalized_id,
+        "media_type": content_type,
+        "title": title,
         "genres": "|".join(genres),
         "cast": "|".join(cast),
         "director": director or "",
         "description": d.get("overview") or "",
         "rating": d.get("vote_average", 0),
         "popularity": d.get("popularity", 0),
-        "poster_path": d.get("poster_path", "")
+        "poster_path": d.get("poster_path", ""),
     }
 
 
-def scrape_top_n_movies(n: int = 500, out_path: Path = DATA_PATH, session: Optional[requests.Session] = None, append: bool = False, max_per_run: int = 0, force: bool = False, source: str = "tmdb") -> List[Dict]:
+def _collect_popular_items(
+    n: int,
+    content_type: str,
+    session: requests.Session,
+) -> List[Tuple[str, Dict]]:
+    items: List[Tuple[str, Dict]] = []
+    page = 1
+    while len(items) < n:
+        data = fetch_popular(page=page, content_type=content_type, session=session)
+        results = data.get("results") or []
+        if not results:
+            break
+        for item in results:
+            items.append((content_type, item))
+            if len(items) >= n:
+                break
+        page += 1
+        time.sleep(0.25)
+    return items
+
+
+def scrape_top_n_movies(
+    n: int = 500,
+    out_path: Path = DATA_PATH,
+    session: Optional[requests.Session] = None,
+    append: bool = False,
+    max_per_run: int = 0,
+    force: bool = False,
+    source: str = "tmdb",
+    include_tv: bool = False,
+) -> List[Dict]:
     """Scrape the top `n` popular movies and write them to CSV.
 
     The default `source` is "tmdb". In future this parameter can be used to
@@ -112,28 +161,22 @@ def scrape_top_n_movies(n: int = 500, out_path: Path = DATA_PATH, session: Optio
             # if counting fails, continue
             pass
 
-    movies = []
-    page = 1
-    while len(movies) < n:
-        data = fetch_popular_movies(page=page, session=session)
-        results = data.get("results") or []
-        if not results:
-            break
-        for item in results:
-            movies.append(item)
-            if len(movies) >= n:
-                break
-        page += 1
-        time.sleep(0.25)
+    if include_tv:
+        per_type = max(1, n // 2)
+        movie_items = _collect_popular_items(per_type, "movie", session)
+        tv_items = _collect_popular_items(per_type, "tv", session)
+        items = movie_items + tv_items
+    else:
+        items = _collect_popular_items(n, "movie", session)
 
     rows = []
-    for m in movies:
+    for content_type, item in items:
         try:
-            d = fetch_movie_details(m['id'], session=session)
-            row = _normalize_detail(d)
+            d = fetch_details(item['id'], content_type=content_type, session=session)
+            row = _normalize_detail(d, content_type=content_type)
             rows.append(row)
         except Exception as e:
-            logger.warning("Failed to fetch details for id %s: %s", m.get('id'), e)
+            logger.warning("Failed to fetch details for %s id %s: %s", content_type, item.get('id'), e)
         # be polite with API rate limits
         time.sleep(0.2)
 
@@ -185,7 +228,7 @@ def scrape_top_n_movies(n: int = 500, out_path: Path = DATA_PATH, session: Optio
     else:
         # write full CSV (overwrite)
         import csv
-        keys = ["movie_id", "title", "genres", "cast", "director", "description", "rating", "popularity", "poster_path"]
+        keys = ["movie_id", "media_type", "title", "genres", "cast", "director", "description", "rating", "popularity", "poster_path"]
         with open(out_path, "w", newline='', encoding="utf-8") as f:
             writer = csv.DictWriter(f, fieldnames=keys)
             writer.writeheader()
@@ -195,7 +238,14 @@ def scrape_top_n_movies(n: int = 500, out_path: Path = DATA_PATH, session: Optio
     return rows
 
 
-def run_periodic(n: int = 100, interval_seconds: int = 3600, append: bool = True, max_per_run: int = 0, force: bool = False):
+def run_periodic(
+    n: int = 100,
+    interval_seconds: int = 3600,
+    append: bool = True,
+    max_per_run: int = 0,
+    force: bool = False,
+    include_tv: bool = False,
+):
     """Run scraper periodically every `interval_seconds` seconds.
 
     This will continuously fetch the top `n` movies and append them to CSV.
@@ -206,7 +256,14 @@ def run_periodic(n: int = 100, interval_seconds: int = 3600, append: bool = True
     try:
         while True:
             logger.info("Scraping top %d movies...", n)
-            scrape_top_n_movies(n=n, session=session, append=append, max_per_run=max_per_run, force=force)
+            scrape_top_n_movies(
+                n=n,
+                session=session,
+                append=append,
+                max_per_run=max_per_run,
+                force=force,
+                include_tv=include_tv,
+            )
             logger.info("Sleeping for %d seconds...", interval_seconds)
             time.sleep(interval_seconds)
     except KeyboardInterrupt:
@@ -220,13 +277,28 @@ def _cli():
     p.add_argument("--append", action="store_true", help="Append to existing CSV (dedupe using movie_id/title)")
     p.add_argument("--max-per-run", type=int, default=0, help="If >0, append at most this many new movies per run")
     p.add_argument("--force", action="store_true", help="Force scraping even if CSV already contains >= n movies")
+    p.add_argument("--include-tv", action="store_true", help="Also scrape TV series/shows")
     p.add_argument("--interval", type=int, default=0, help="If >0, run periodically every INTERVAL seconds")
     args = p.parse_args()
 
     if args.interval and args.interval > 0:
-        run_periodic(n=args.n, interval_seconds=args.interval, append=args.append, max_per_run=args.max_per_run, force=args.force)
+        run_periodic(
+            n=args.n,
+            interval_seconds=args.interval,
+            append=args.append,
+            max_per_run=args.max_per_run,
+            force=args.force,
+            include_tv=args.include_tv,
+        )
     else:
-        scrape_top_n_movies(n=args.n, out_path=Path(args.out), append=args.append, max_per_run=args.max_per_run, force=args.force)
+        scrape_top_n_movies(
+            n=args.n,
+            out_path=Path(args.out),
+            append=args.append,
+            max_per_run=args.max_per_run,
+            force=args.force,
+            include_tv=args.include_tv,
+        )
 
 
 if __name__ == "__main__":
