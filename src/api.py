@@ -17,6 +17,7 @@ from src.config import (
 from src.data__loader import append_movie, load_movies
 from src.recomender import build_index, recommend_by_genre, recommend_by_title
 from src.scraper import scrape_top_n_movies
+from src.user_store import personalization_status, train_personalization_now
 
 
 class MovieIn(BaseModel):
@@ -44,6 +45,7 @@ logging.basicConfig(level=logging.INFO)
 
 _INDEX_LOCK = threading.Lock()
 _INDEX_STATE: Dict[str, Any] = {"index": None, "last_refresh": None}
+_TRAIN_STATE: Dict[str, Any] = {"last_events": 0, "last_trained_at": None}
 
 
 def _scrape_dataset(force: bool = False) -> None:
@@ -96,12 +98,32 @@ async def _run_periodic_refresh() -> None:
             pass
 
 
+async def _run_periodic_training(interval_seconds: int = 300) -> None:
+    """Background loop to retrain personalization when new feedback arrives."""
+    while True:
+        await asyncio.sleep(max(60, int(interval_seconds)))
+        try:
+            from src.personalization_model import load_feedback_events
+
+            events = load_feedback_events()
+            total = len(events)
+            last_seen = int(_TRAIN_STATE.get("last_events", 0))
+            if total >= 5 and total > last_seen:
+                _TRAIN_STATE["last_events"] = total
+                _TRAIN_STATE["last_trained_at"] = datetime.now(timezone.utc).isoformat()
+                train_personalization_now(min_events=5)
+        except Exception:
+            # keep running; training is best-effort
+            pass
+
+
 @app.on_event("startup")
 async def _startup() -> None:
     _scrape_dataset(force=True)
     _refresh_index()
     if REFRESH_INTERVAL_SECONDS > 0:
         asyncio.create_task(_run_periodic_refresh())
+    asyncio.create_task(_run_periodic_training())
 
 
 @app.get("/health")
@@ -147,3 +169,13 @@ async def refresh() -> Dict[str, Any]:
     _refresh_index()
     ts = _INDEX_STATE.get("last_refresh")
     return {"status": "ok", "last_refresh": ts.isoformat() if ts else None}
+
+
+@app.get("/personalization/status")
+async def personalization_model_status() -> Dict[str, Any]:
+    return personalization_status()
+
+
+@app.post("/personalization/train")
+async def personalization_model_train(min_events: int = 25) -> Dict[str, Any]:
+    return train_personalization_now(min_events=min_events)

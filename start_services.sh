@@ -115,7 +115,7 @@ case "$cmd" in
     start)
         if [ ! -x "$VENV_PY" ]; then
             echo "Virtualenv python not found at $VENV_PY"
-            echo "Create venv with: python3 -m venv .venv && source .venv/bin/activate && pip install -r requirements.txt"
+            echo "Create venv with: python3 -m venv .venv && source .venv/bin/activate && python3 -m pip install -r requirements.txt"
             exit 1
         fi
         start_uvicorn

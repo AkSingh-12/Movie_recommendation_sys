@@ -18,7 +18,7 @@ source .venv/bin/activate
 2) Install dependencies (and Playwright browsers if you want to run UI tests):
 
 ```bash
-pip install -r requirements.txt
+python3 -m pip install -r requirements.txt
 # optional: installs Chromium/WebKit/Firefox used by tests/playwright_ui_test.py
 playwright install
 ```
@@ -59,6 +59,13 @@ curl -X POST -H "Content-Type: application/json" \
 ```
 
 The Streamlit UI also has an "Add a new movie" form in the sidebar and an "Enable auto-refresh" checkbox which will poll the backend and refresh the UI on the selected interval.
+
+Voice title search
+------------------
+- Use the **Listen movie name (3s)** button in the Streamlit UI.
+- The app records microphone audio from the runtime/server where Streamlit is running.
+- Primary transcription uses Google Web Speech via `SpeechRecognition` (internet usually required).
+- Offline fallback via Sphinx is attempted automatically if available.
 
 Docker / docker-compose
 -----------------------
@@ -125,6 +132,18 @@ Playwright UI smoke test (requires `streamlit run web/app_streamlit.py` to be ru
 RUN_UI_TESTS=1 pytest
 ```
 
+Personalization model training:
+
+```bash
+# check current status
+.venv/bin/python -m src.personalization_model --status
+
+# train from recorded feedback events
+.venv/bin/python -m src.personalization_model --train --min-events 25
+```
+
+The Streamlit app also exposes a "Train personalization model now" button in the learning section.
+
 Notes
 - I added small compatibility wrappers in `src/` so `main.py` and the API import paths match the existing codebase.
-- Need pinned dependencies? Run `pip freeze > requirements.lock.txt` after creating your environment.
+- Need pinned dependencies? Run `python3 -m pip freeze > requirements.lock.txt` after creating your environment.

@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import io
+import importlib.util
+import re
 import threading
 import wave
 from typing import Any, Dict, Optional
@@ -144,20 +146,89 @@ def capture_voice_mood_backend(duration_sec: float = 3.0, sample_rate: int = 160
 
 def transcribe_movie_title_from_wav_bytes(audio_bytes: bytes) -> Optional[str]:
     """Best-effort speech-to-text for spoken movie-name requests."""
+    out = transcribe_movie_title_with_debug(audio_bytes)
+    return out.get("text")
+
+
+def _clean_transcript(text: str) -> str:
+    t = str(text or "").strip()
+    if not t:
+        return ""
+    t = re.sub(r"[^\w\s']", " ", t)
+    t = re.sub(r"\s+", " ", t).strip()
+    prefixes = (
+        "recommend me ",
+        "play ",
+        "show ",
+        "search ",
+        "find ",
+        "movie ",
+        "watch ",
+        "recommend ",
+    )
+    low = t.lower()
+    for p in prefixes:
+        if low.startswith(p):
+            t = t[len(p) :].strip()
+            low = t.lower()
+    return t
+
+
+def transcribe_movie_title_with_debug(audio_bytes: bytes) -> Dict[str, Any]:
+    """Speech-to-text with engine fallback and debug metadata."""
     try:
         import speech_recognition as sr
-    except Exception:
-        return None
+    except Exception as exc:
+        return {"text": None, "engine": None, "error": f"speech_recognition_missing: {exc}"}
 
     rec = sr.Recognizer()
+    errors = []
+
+    def _format_engine_error(engine: str, exc: Exception) -> str:
+        msg = str(exc or "").strip()
+        if not msg:
+            msg = exc.__class__.__name__
+        return f"{engine}:{msg}"
     try:
         with sr.AudioFile(io.BytesIO(audio_bytes)) as src:
             audio_data = rec.record(src)
-        text = rec.recognize_google(audio_data)
-    except Exception:
-        return None
-    cleaned = str(text or "").strip()
-    return cleaned or None
+    except Exception as exc:
+        return {"text": None, "engine": None, "error": f"audio_decode_failed: {exc}"}
+
+    # Primary cloud recognizer.
+    try:
+        text = rec.recognize_google(audio_data, language="en-US")
+        cleaned = _clean_transcript(str(text or ""))
+        if cleaned:
+            return {"text": cleaned, "engine": "google", "error": None}
+    except Exception as exc:
+        errors.append(_format_engine_error("google", exc))
+
+    # Optional offline fallback if pocketsphinx is installed.
+    if importlib.util.find_spec("pocketsphinx") is not None:
+        try:
+            text = rec.recognize_sphinx(audio_data)
+            cleaned = _clean_transcript(str(text or ""))
+            if cleaned:
+                return {"text": cleaned, "engine": "sphinx", "error": None}
+        except Exception as exc:
+            errors.append(_format_engine_error("sphinx", exc))
+    else:
+        errors.append("sphinx:PocketSphinx not installed")
+
+    return {
+        "text": None,
+        "engine": None,
+        "error": "; ".join(errors) if errors else "transcription_failed",
+    }
+
+
+def listen_for_movie_title_backend(duration_sec: float = 3.0) -> Dict[str, Any]:
+    """Capture microphone audio and transcribe a spoken movie title."""
+    voice_bytes = capture_voice_wav_bytes_backend(duration_sec=duration_sec)
+    out = transcribe_movie_title_with_debug(voice_bytes)
+    out["duration_sec"] = float(duration_sec)
+    return out
 
 
 def fuse_mood_signals(
@@ -201,7 +272,10 @@ def fuse_mood_signals(
     }
 
 
-def detect_multimodal_mood_backend(voice_duration_sec: float = 3.0) -> Optional[Dict[str, Any]]:
+def detect_multimodal_mood_backend(
+    voice_duration_sec: float = 3.0,
+    use_parallel_threads: bool = False,
+) -> Optional[Dict[str, Any]]:
     """Capture face and voice together, then fuse into one mood signal.
 
     Voice capture is optional; if it fails, face-only detection is used.
@@ -212,6 +286,7 @@ def detect_multimodal_mood_backend(voice_duration_sec: float = 3.0) -> Optional[
 
     face_error: Optional[Exception] = None
     voice_error: Optional[Exception] = None
+    transcript_error: Optional[str] = None
 
     def _run_face() -> None:
         nonlocal face_details, face_error
@@ -221,24 +296,36 @@ def detect_multimodal_mood_backend(voice_duration_sec: float = 3.0) -> Optional[
             face_error = exc
 
     def _run_voice() -> None:
-        nonlocal voice_details, voice_error, spoken_text
+        nonlocal voice_details, voice_error, spoken_text, transcript_error
         try:
             voice_bytes = capture_voice_wav_bytes_backend(duration_sec=voice_duration_sec)
             voice_details = analyze_voice_mood_from_wav_bytes(voice_bytes)
-            spoken_text = transcribe_movie_title_from_wav_bytes(voice_bytes)
+            stt = transcribe_movie_title_with_debug(voice_bytes)
+            spoken_text = stt.get("text")
+            transcript_error = stt.get("error")
         except Exception as exc:  # keep best-effort behavior
             voice_error = exc
 
-    t_face = threading.Thread(target=_run_face, daemon=True)
-    t_voice = threading.Thread(target=_run_voice, daemon=True)
-    t_face.start()
-    t_voice.start()
-    t_face.join()
-    t_voice.join()
+    if use_parallel_threads:
+        t_face = threading.Thread(target=_run_face, daemon=True)
+        t_voice = threading.Thread(target=_run_voice, daemon=True)
+        t_face.start()
+        t_voice.start()
+        t_face.join()
+        t_voice.join()
+    else:
+        # Sequential execution is slower but typically more stable with
+        # OpenCV/TensorFlow audio-video device stacks in constrained runtimes.
+        _run_voice()
+        _run_face()
 
     fused = fuse_mood_signals(face_details, voice_details)
     if fused is None and face_error and voice_error:
         raise RuntimeError("Face and voice backend detection both failed.")
     if fused is not None and spoken_text:
         fused["spoken_text"] = spoken_text
+    if fused is not None and transcript_error:
+        fused["voice_transcript_error"] = transcript_error
+    if fused is not None and voice_error:
+        fused["voice_error"] = str(voice_error)
     return fused

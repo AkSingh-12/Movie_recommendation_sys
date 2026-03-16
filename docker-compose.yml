@@ -55,7 +55,7 @@ services:
       - TMDB_API_KEY=${TMDB_API_KEY:-}
       - SCRAPE_N=${SCRAPE_N:-200}
       - SCRAPER_INTERVAL=${SCRAPER_INTERVAL:-3600}
-    command: ["/bin/sh", "-c", "python -m src.scraper --n ${SCRAPE_N} --append --interval ${SCRAPER_INTERVAL}"]
+    command: ["/bin/sh", "-c", "python3 -m src.scraper --n ${SCRAPE_N} --append --interval ${SCRAPER_INTERVAL}"]
     volumes:
       - ./:/app:rw
       - ./data:/app/data:rw

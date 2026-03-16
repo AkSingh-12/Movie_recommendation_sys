@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, Optional
 
@@ -11,6 +12,10 @@ def _repo_root() -> Path:
 
 def _store_path() -> Path:
     return _repo_root() / "data" / "user_learning.json"
+
+
+def _events_path() -> Path:
+    return _repo_root() / "data" / "feedback_events.jsonl"
 
 
 def _default_profile() -> Dict[str, Any]:
@@ -44,6 +49,13 @@ def save_user_profile(profile: Dict[str, Any]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     with path.open("w", encoding="utf-8") as f:
         json.dump(profile, f, ensure_ascii=False, indent=2)
+
+
+def _append_feedback_event(event: Dict[str, Any]) -> None:
+    p = _events_path()
+    p.parent.mkdir(parents=True, exist_ok=True)
+    with p.open("a", encoding="utf-8") as f:
+        f.write(json.dumps(event, ensure_ascii=False) + "\n")
 
 
 def _parse_genres(movie: Dict[str, Any]) -> list[str]:
@@ -106,6 +118,41 @@ def record_feedback(
 
     profile["feedback_events"] = int(profile.get("feedback_events", 0)) + 1
     save_user_profile(profile)
+    event_count = int(profile.get("feedback_events", 0))
+
+    base_score = movie.get("score", movie.get("rating", 0.0))
+    try:
+        base_score = float(base_score)
+    except (TypeError, ValueError):
+        base_score = 0.0
+
+    event = {
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+        "mood": mood_key or None,
+        "rating": float(rating) if rating is not None else None,
+        "favorite": bool(favorite),
+        "signal": float(signal),
+        "movie": {
+            "title": str(movie.get("title", "") or ""),
+            "genres": str(movie.get("genres", "") or ""),
+            "director": str(movie.get("director", "") or ""),
+            "media_type": str(movie.get("media_type", "") or "movie"),
+            "rating": movie.get("rating"),
+            "popularity": movie.get("popularity"),
+            "base_score": base_score,
+        },
+    }
+    _append_feedback_event(event)
+
+    # Keep training incremental without blocking every feedback action.
+    # Train slightly more frequently to keep the personalization model fresh.
+    if event_count > 0 and event_count % 3 == 0:
+        try:
+            from src.personalization_model import train_personalization_model
+
+            train_personalization_model(min_events=5)
+        except Exception:
+            pass
 
 
 def _learning_score(movie: Dict[str, Any], mood: Optional[str], profile: Dict[str, Any]) -> float:
@@ -133,8 +180,20 @@ def rerank_results_for_learning(results: list[Dict[str, Any]], mood: Optional[st
             base_score = float(base)
         except (TypeError, ValueError):
             base_score = 0.0
-        boost = _learning_score(movie, mood, profile)
+        rule_boost = _learning_score(movie, mood, profile)
+        model_boost = 0.0
+        try:
+            from src.personalization_model import predict_personalization_boost
+
+            model_boost = predict_personalization_boost(movie, mood)
+        except Exception:
+            model_boost = 0.0
+        model_total_boost = max(-1.2, min(1.2, float(model_boost)))
+        boost = float(rule_boost) + model_total_boost
         enriched = dict(movie)
+        enriched["rule_boost"] = float(rule_boost)
+        enriched["model_boost"] = float(model_boost)
+        enriched["model_total_boost"] = float(model_total_boost)
         enriched["learning_boost"] = float(boost)
         enriched["score"] = base_score + boost
         scored.append(enriched)
@@ -169,3 +228,39 @@ def learning_progress(target_events: int = 200) -> Dict[str, Any]:
         "progress_pct": float(pct),
         "stage": stage,
     }
+
+
+def train_personalization_now(min_events: int = 10) -> Dict[str, Any]:
+    linear_out: Dict[str, Any]
+    try:
+        from src.personalization_model import train_personalization_model
+
+        linear_out = train_personalization_model(min_events=max(5, int(min_events)))
+    except Exception as exc:
+        linear_out = {"trained": False, "error": str(exc)}
+
+    return {
+        "trained": bool(linear_out.get("trained")),
+        "linear": linear_out,
+    }
+
+
+def personalization_status() -> Dict[str, Any]:
+    linear_status: Dict[str, Any]
+    linear_err: Optional[str] = None
+
+    try:
+        from src.personalization_model import personalization_model_status
+
+        linear_status = personalization_model_status()
+    except Exception as exc:
+        linear_err = str(exc)
+        linear_status = {"available": False, "error": linear_err}
+
+    out: Dict[str, Any] = {
+        "available": bool(linear_status.get("available")),
+        "linear": linear_status,
+    }
+    if linear_err:
+        out["errors"] = {"linear": linear_err}
+    return out
