@@ -41,11 +41,11 @@ def load_movies_by_genre(genre: str, top_n: int = 20, sort_by: str = "rating", p
 
 
 def append_movie(movie: dict, path=DATA_PATH):
-    """Append a movie (dict) as a new row to the CSV file.
+    """CSV फ़ाइल में एक नई movie (dict) को नई पंक्ति के रूप में जोड़ता है।
 
-    This acquires a file-level lock so concurrent API calls don't corrupt the CSV.
-    The movie dict keys should match the CSV column names (at least 'title').
-    Returns the new DataFrame after the append.
+    यह फ़ाइल-स्तर का lock लेता है ताकि एक साथ कई API calls से CSV खराब न हो।
+    movie dict की कुंजियाँ CSV के कॉलम नामों से मेल खानी चाहिए (कम से कम 'title')।
+    जोड़ने के बाद नया DataFrame return करता है।
     """
     p = Path(path)
     # ensure parent dir exists

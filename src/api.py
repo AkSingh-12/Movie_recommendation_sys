@@ -51,7 +51,7 @@ _TRAIN_STATE: Dict[str, Any] = {"last_events": 0, "last_trained_at": None}
 def _scrape_dataset(force: bool = False) -> None:
     if not ENABLE_AUTO_SCRAPER:
         return
-    if not TMDB_API_KEY or TMDB_API_KEY == "YOUR_TMDB_API_KEY_HERE":
+    if not TMDB_API_KEY or TMDB_API_KEY == "785c5f1bd5e3e823f06abdfe6168588e":
         logger.warning("TMDB_API_KEY is not set; skipping automatic scraper run.")
         return
     try:

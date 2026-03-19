@@ -19,3 +19,10 @@ logs/
 
 # Generated cache artifacts
 data/cache/tfidf_matrix.npy
+data/cache/tfidf_sim.npy
+data/cache/tfidf_vectorizer.pkl
+data/cache/embeddings.npy
+data/cache/emb_sim.npy
+
+# Backup files
+*.bak

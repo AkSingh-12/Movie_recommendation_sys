@@ -1,5 +1,4 @@
 import streamlit as st
-import streamlit.components.v1 as components
 import requests
 from typing import Optional
 from pathlib import Path
@@ -42,135 +41,6 @@ from src.multimodal_mood import (
 
 # placeholder image used when no poster can be found
 PLACEHOLDER_URL = "https://via.placeholder.com/200x300?text=No+Poster"
-PUBLIC_DOMAIN_STREAM = "https://commondatastorage.googleapis.com/gtv-videos-bucket/sample/BigBuckBunny.mp4"
-
-# lightweight video source "database" backed by JSON
-def _video_store_path() -> Path:
-    p = repo_root / "data"
-    p.mkdir(parents=True, exist_ok=True)
-    return p / "video_sources.json"
-
-
-def load_video_sources() -> dict[str, str]:
-    """Load a title->video_url mapping from data/video_sources.json."""
-    try:
-        path = _video_store_path()
-        if not path.exists():
-            return {}
-        raw = path.read_text(encoding="utf-8") or "{}"
-        data = json.loads(raw)
-        if isinstance(data, list):
-            out: dict[str, str] = {}
-            for item in data:
-                if isinstance(item, dict) and item.get("title") and item.get("url"):
-                    out[str(item["title"]).lower()] = str(item["url"])
-            return out
-        if isinstance(data, dict):
-            return {str(k).lower(): str(v) for k, v in data.items() if v}
-    except Exception:
-        pass
-    return {}
-
-
-def save_video_source(title: str, url: str, overwrite: bool = False) -> None:
-    """Persist a video URL for a given title."""
-    if not title or not url:
-        return
-    try:
-        path = _video_store_path()
-        db = load_video_sources()
-        key = title.lower()
-        if key in db and not overwrite:
-            return
-        db[key] = url
-        path.write_text(json.dumps(db, ensure_ascii=False, indent=2), encoding="utf-8")
-    except Exception:
-        pass
-
-
-def _resolve_video_url(title: str, db: dict[str, str]) -> Optional[str]:
-    """Resolve a playable URL for a title from the local db (case-insensitive, slug)."""
-    if not title:
-        return None
-    low = title.lower()
-    if low in db:
-        return db[low]
-    slug = _watch_token_from_title(title)
-    if slug in db:
-        return db[slug]
-    # loose match
-    for k, v in db.items():
-        if low == k or slug == k:
-            return v
-    return None
-
-
-def _youtube_embed_url(url: str) -> Optional[str]:
-    """Convert a YouTube watch/short link to an embeddable URL."""
-    if not url:
-        return None
-    patterns = [
-        r"youtu\.be/([\w-]{6,})",
-        r"youtube\.com/watch\?v=([\w-]{6,})",
-        r"youtube\.com/embed/([\w-]{6,})",
-    ]
-    for pat in patterns:
-        m = re.search(pat, url)
-        if m:
-            vid = m.group(1)
-            return f"https://www.youtube.com/embed/{vid}"
-    return None
-
-
-def fetch_trailer_url(title: str, tmdb_api_key: Optional[str]) -> Optional[str]:
-    """Try to grab a YouTube trailer URL from TMDB."""
-    if not tmdb_api_key or not title:
-        return None
-    try:
-        search = requests.get(
-            "https://api.themoviedb.org/3/search/movie",
-            params={"api_key": tmdb_api_key, "query": title, "page": 1},
-            timeout=6,
-        )
-        search.raise_for_status()
-        results = search.json().get("results") or []
-        if not results:
-            return None
-        movie_id = results[0].get("id")
-        if not movie_id:
-            return None
-        vids = requests.get(
-            f"https://api.themoviedb.org/3/movie/{movie_id}/videos",
-            params={"api_key": tmdb_api_key, "language": "en-US"},
-            timeout=6,
-        )
-        vids.raise_for_status()
-        videos = vids.json().get("results") or []
-        for v in videos:
-            if v.get("site") == "YouTube" and v.get("type") in {"Trailer", "Teaser"} and v.get("key"):
-                return f"https://www.youtube.com/watch?v={v['key']}"
-    except Exception:
-        return None
-    return None
-
-
-def populate_video_db_with_trailers(tmdb_api_key: Optional[str], limit: int = 150) -> int:
-    """Fetch YouTube trailers via TMDB and cache them into the local video DB."""
-    if not tmdb_api_key:
-        return 0
-    db = load_video_sources()
-    df = load_movies()
-    if df.empty or "title" not in df.columns:
-        return 0
-    added = 0
-    for title in df["title"].dropna().astype(str).tolist()[:limit]:
-        if title.lower() in db:
-            continue
-        url = fetch_trailer_url(title, tmdb_api_key)
-        if url:
-            save_video_source(title, url)
-            added += 1
-    return added
 
 # Configure default emotion model path only if a known local model file exists.
 _MODEL_CANDIDATES = [
@@ -337,8 +207,7 @@ st.markdown(
     .poster-img {width:100%; border-radius:14px; object-fit:cover; aspect-ratio: 2 / 3; max-height: 280px;}
     .poster-overlay {position:absolute; inset:0; background: linear-gradient(180deg, transparent 20%, rgba(5,5,11,0.7)); opacity:0; transition:opacity 0.2s ease;}
     .poster-card:hover .poster-overlay {opacity:1;}
-    .poster-link {text-decoration:none; color:inherit; display:block;}
-    .poster-link:focus {outline:none;}
+    .watch-chip {position:absolute; bottom:10px; left:10px; padding:8px 12px; border-radius:999px; background: linear-gradient(90deg, var(--accent), var(--accent-2)); color:#06060e; font-weight:700; text-decoration:none; font-size:12px;}
     .poster-meta {padding:8px 6px 6px 4px;}
     .poster-title {font-size:14px; font-weight:700; margin:4px 0 3px 0; color: var(--text);}   
     .poster-sub {color: var(--muted); font-size:12px; letter-spacing:0.02em;}
@@ -366,16 +235,6 @@ if TMDB_API_KEY:
 else:
     st.sidebar.warning("TMDB API key missing; posters/ratings may use placeholders.")
 
-# Auto-populate trailers into the local video DB (YouTube links via TMDB).
-if TMDB_API_KEY and not st.session_state.get("_trailers_prefetched", False):
-    try:
-        df_tmp = load_movies()
-        lim = max(200, len(df_tmp)) if not df_tmp.empty else 200
-        populate_video_db_with_trailers(TMDB_API_KEY, limit=lim)
-        st.session_state["_trailers_prefetched"] = True
-    except Exception:
-        st.session_state["_trailers_prefetched"] = True
-
 st.sidebar.header("User Sign-In")
 st.session_state.setdefault("signed_in", False)
 st.session_state.setdefault("user_email", "")
@@ -396,19 +255,13 @@ st.sidebar.header("Recommendation Mode")
 mode = "Mood Based"
 st.sidebar.caption("Mood-based recommendation is always enabled.")
 NUM = st.sidebar.slider("Number of recommendations", min_value=1, max_value=50, value=30)
-AUTO_REFRESH = st.sidebar.checkbox("Enable auto-refresh (poll backend)", value=False)
-POLL_INTERVAL = 10  # refresh interval in seconds
+AUTO_REFRESH = st.sidebar.checkbox("Enable auto-refresh (poll backend)", value=True)
+POLL_INTERVAL = 10  # fast refresh; intentionally not shown in UI
 content_types = st.sidebar.multiselect(
     "Content type",
     options=["Movies", "TV Shows"],
     default=["Movies", "TV Shows"],
 )
-if TMDB_API_KEY:
-    with st.sidebar.expander("Trailer prefetch"):
-        if st.button("Fetch trailers for all movies", use_container_width=True):
-            total = load_movies().shape[0] if not load_movies().empty else 0
-            added = populate_video_db_with_trailers(TMDB_API_KEY, limit=max(500, total))
-            st.sidebar.success(f"Fetched {added} trailers into video database.")
 
 with st.sidebar.expander("Database manager (edit & save)"):
     try:
@@ -421,6 +274,9 @@ with st.sidebar.expander("Database manager (edit & save)"):
             st.sidebar.success(f"Saved {len(edited)} rows to {data_path}")
     except Exception as e:
         st.sidebar.warning(f"DB editor unavailable: {e}")
+
+st.sidebar.markdown("[Open Netflix India](https://www.netflix.com/in/)")
+
 
 def _clean_poster_value(value: Optional[str]) -> Optional[str]:
     if isinstance(value, str):
@@ -490,15 +346,14 @@ def fetch_watch_url(
     tmdb_api_key: Optional[str],
     media_type: Optional[str] = None,
 ) -> str:
-    """Return an internal watch link that opens the in-app player."""
+    """Return a Netflix search URL for a title."""
     title_str = (title or "").strip()
     if not title_str:
-        return "#"
-    token = _watch_token_from_title(title_str)
-    return f"?watch_token={token}&watch_title={quote_plus(title_str)}"
+        return "https://www.netflix.com"
+    return f"https://www.netflix.com/search?q={quote_plus(title_str)}"
 
 
-@st.cache_data(ttl=10 * 60)
+@st.cache_data(ttl=60 * 60)
 def fetch_banner_image_url(
     title: Optional[str],
     poster_path: Optional[str],
@@ -534,43 +389,17 @@ def fetch_banner_image_url(
                 backdrop_path = r.get("backdrop_path")
                 if backdrop_path:
                     return _fit_for_banner(f"https://image.tmdb.org/t/p/{size}{backdrop_path}")
-                # try full image list to find a landscape-friendly backdrop
-                movie_id = r.get("id")
-                if movie_id:
-                    try:
-                        imgs = requests.get(
-                            f"https://api.themoviedb.org/3/movie/{movie_id}/images",
-                            params={"api_key": tmdb_api_key, "include_image_language": "en,null"},
-                            timeout=6,
-                        )
-                        imgs.raise_for_status()
-                        backdrops = imgs.json().get("backdrops") or []
-                        for b in backdrops:
-                            w = b.get("width") or 0
-                            h = b.get("height") or 1
-                            ar = w / h
-                            if w >= 1200 and 1.5 <= ar <= 2.35 and b.get("file_path"):
-                                return _fit_for_banner(f"https://image.tmdb.org/t/p/original{b['file_path']}")
-                    except Exception:
-                        pass
             # if none have backdrops, fall through to fallback
         except Exception:
             pass
-    # fallback: fit poster into banner crop if available
-    poster_url = fetch_poster_url(title_str, poster_path, tmdb_api_key, size="w780")
-    if poster_url and poster_url != PLACEHOLDER_URL:
-        return _fit_for_banner(poster_url)
-    # last resort: return placeholder so old/non-fitting posters are not reused
-    return PLACEHOLDER_URL
+    poster_url = fetch_poster_url(title_str, poster_path, tmdb_api_key, size="w1280")
+    return _fit_for_banner(poster_url)
 
 
 def show_movie_card(movie: dict[str, object], tmdb_api_key: Optional[str]):
     poster_value = movie.get('poster_path')
     title_str = str(movie.get("title", ""))
     media_type = str(movie.get("media_type", "movie")).strip().lower()
-    token = _watch_token_from_title(title_str)
-    watch_map = st.session_state.setdefault("watch_map", {})
-    watch_map[token] = movie
     poster = fetch_poster_url(
         title_str,
         poster_value if isinstance(poster_value, str) else None,
@@ -582,18 +411,17 @@ def show_movie_card(movie: dict[str, object], tmdb_api_key: Optional[str]):
         poster = PLACEHOLDER_URL
     st.markdown(
         f"""
-        <a class='poster-link' href="{watch_url}" target="_self">
-            <div class='poster-card'>
-                <div class='poster-frame'>
-                    <img src='{poster}' class='poster-img' alt='{title_str} poster'>
-                    <div class='poster-overlay'></div>
-                </div>
-                <div class='poster-meta'>
-                    <div class='poster-title'>{movie.get('title','Untitled')}</div>
-                    <div class='poster-sub'>{movie.get('genres','')}</div>
-                </div>
+        <div class='poster-card'>
+            <div class='poster-frame'>
+                <img src='{poster}' class='poster-img' alt='{title_str} poster'>
+                <div class='poster-overlay'></div>
+                <a class='watch-chip' href='{watch_url}' target='_blank'>Watch</a>
             </div>
-        </a>
+            <div class='poster-meta'>
+                <div class='poster-title'><a href='{watch_url}' target='_blank' style='color:inherit;text-decoration:none;'>{movie.get('title','Untitled')}</a></div>
+                <div class='poster-sub'>{movie.get('genres','')}</div>
+            </div>
+        </div>
         """,
         unsafe_allow_html=True,
     )
@@ -631,49 +459,6 @@ def _get_all_genres() -> list[str]:
             if g:
                 genres.add(g)
     return sorted(genres, key=lambda x: x.lower())
-
-def _resolve_movie_by_title(title: str) -> Optional[dict]:
-    """Find a movie dict matching a title (case-insensitive) from the catalog."""
-    if not title:
-        return None
-    try:
-        df = load_movies()
-        if df.empty or "title" not in df.columns:
-            return None
-        mask = df["title"].fillna("").str.lower() == title.lower()
-        if mask.any():
-            return df[mask].iloc[0].to_dict()
-        choices = df["title"].dropna().astype(str).tolist()
-        match = get_close_matches(title, choices, n=1, cutoff=0.75)
-        if match:
-            pick = df[df["title"] == match[0]].iloc[0]
-            return pick.to_dict()
-    except Exception:
-        return None
-    return None
-
-
-def _clear_watch_param():
-    """Remove watch query param to allow normal navigation."""
-    try:
-        st.query_params.clear()
-    except Exception:
-        pass
-
-
-def _watch_token_from_title(title: str) -> str:
-    """Create a stable, URL-safe token from a title."""
-    slug = re.sub(r"[^a-zA-Z0-9]+", "-", title.lower()).strip("-")
-    return slug or "untitled"
-
-
-def _title_from_token(token: str) -> str:
-    """Best-effort conversion from a watch token back to a readable title."""
-    token = (token or "").strip("-")
-    if not token:
-        return ""
-    words = token.replace("-", " ")
-    return " ".join(w.capitalize() for w in words.split())
 
 
 def _apply_content_filter(df: pd.DataFrame) -> pd.DataFrame:
@@ -745,7 +530,6 @@ with topbar_mid:
             if btn:
                 st.session_state["page"] = slug
                 st.session_state.pop("selected_movie", None)
-                _clear_watch_param()
 with topbar_right:
     st.markdown("<div class='search-shell'>", unsafe_allow_html=True)
     typed_title = st.text_input(
@@ -762,44 +546,33 @@ st.session_state.setdefault("page", "home")
 st.session_state.setdefault("user_ratings", {})
 selected_genres: list[str] = []
 
-def _build_banner_pool(tmdb_key: Optional[str]) -> list[dict]:
-    """Use a stable set of known 16:9 backdrops to avoid missing/blank banners."""
-    return [
-        {"title": "Inception", "genres": "Action|Sci-Fi", "banner_url": "https://image.tmdb.org/t/p/original/s3TBrRGB1iav7gFOCNx3H31MoES.jpg"},
-        {"title": "Interstellar", "genres": "Adventure|Drama", "banner_url": "https://image.tmdb.org/t/p/original/rAiYTfKGqDCRIIqo664sY9XZIvQ.jpg"},
-        {"title": "The Dark Knight", "genres": "Action|Crime", "banner_url": "https://image.tmdb.org/t/p/original/hqkIcbrOHL86UncnHIsHVcVmzue.jpg"},
-        {"title": "Dune: Part Two", "genres": "Sci-Fi|Adventure", "banner_url": "https://image.tmdb.org/t/p/original/1pdfLvkbY9ohJlCjQH2CZjjYVvJ.jpg"},
-        {"title": "Spider-Man: Into the Spider-Verse", "genres": "Animation|Action", "banner_url": "https://image.tmdb.org/t/p/original/iiZZdoQBEYBv6id8su7ImL0oCbD.jpg"},
-        {"title": "Mad Max: Fury Road", "genres": "Action|Adventure", "banner_url": "https://image.tmdb.org/t/p/original/1g0dhYtq4irTY1GPXvft6k4YLjm.jpg"},
-    ]
+banner_df = _apply_content_filter(load_movies())
+banner_movies: list[dict] = []
+if not banner_df.empty:
+    ranked = banner_df.copy()
+    if "popularity" in ranked.columns:
+        ranked["popularity"] = pd.to_numeric(ranked["popularity"], errors="coerce")
+        ranked = ranked.sort_values(by="popularity", ascending=False)
+    elif "rating" in ranked.columns:
+        ranked["rating"] = pd.to_numeric(ranked["rating"], errors="coerce")
+        ranked = ranked.sort_values(by="rating", ascending=False)
+    banner_movies = ranked.head(6).to_dict(orient="records")
 
-
-banner_movies = _build_banner_pool(TMDB_API_KEY or None)
-
-if "hero_index" not in st.session_state:
-    st.session_state["hero_index"] = 0
-elif banner_movies:
-    st.session_state["hero_index"] = (st.session_state["hero_index"] + 1) % len(banner_movies)
-
+st.session_state.setdefault("hero_index", 0)
 banner_index = st.session_state["hero_index"] % max(1, len(banner_movies))
 banner_main = banner_movies[banner_index] if banner_movies else {"title": "Featured Movies", "genres": "Movies|Series"}
-banner_token = _watch_token_from_title(str(banner_main.get("title", "")))
-st.session_state.setdefault("watch_map", {})[banner_token] = banner_main
-banner_poster = (
-    banner_main.get("banner_url")
-    or fetch_banner_image_url(
-        str(banner_main.get("title", "")),
-        banner_main.get("poster_path") if isinstance(banner_main.get("poster_path"), str) else None,
-        TMDB_API_KEY or None,
-        size="original",
-    )
+banner_poster = fetch_banner_image_url(
+    str(banner_main.get("title", "")),
+    banner_main.get("poster_path") if isinstance(banner_main.get("poster_path"), str) else None,
+    TMDB_API_KEY or None,
+    size="original",
 )
 banner_desc = str(banner_main.get("description", "") or banner_main.get("overview", "")).strip()
 if banner_desc:
     banner_desc = banner_desc[:170] + ("..." if len(banner_desc) > 170 else "")
 else:
     banner_desc = "Live recommendations based on mood, voice, and your learning profile."
-banner_watch_url = f"?watch_token={banner_token}&watch_title={quote_plus(str(banner_main.get('title','')))}"
+banner_watch_url = fetch_watch_url(str(banner_main.get("title", "")), TMDB_API_KEY or None)
 st.markdown(
     f"""
     <a href="{banner_watch_url}" target="_blank" style="text-decoration:none;">
@@ -840,35 +613,10 @@ st.session_state["selected_genres_set"] = selected_genres_set
 
 manual_override = bool(typed_query or selected_genres)
 
-# If a watch param is present, route to watch page (token first, then title)
-qp = st.query_params
-watch_token = qp.get("watch_token", [None])[0] if qp.get("watch_token") else None
-if watch_token and st.session_state.get("watch_map", {}).get(watch_token):
-    st.session_state["selected_movie"] = st.session_state["watch_map"][watch_token]
-    st.session_state["page"] = "watch"
-    st.query_params.clear()
-else:
-    target_title = None
-    if watch_token:
-        target_title = _title_from_token(watch_token)
-    if qp.get("watch_title"):
-        target_title = qp.get("watch_title", [None])[0]
-    if not target_title and qp.get("watch"):
-        target_title = qp.get("watch", [None])[0]
-    found = _resolve_movie_by_title(target_title) if target_title else None
-    if found:
-        st.session_state["selected_movie"] = found
-        st.session_state["page"] = "watch"
-        st.query_params.clear()
-    if watch_token or target_title:
-        st.query_params.clear()
 
-
-def render_watch_page(movie: dict[str, object], tmdb_api_key: Optional[str]):
-    if st.button("Back to Home"):
+def render_detail_page(movie: dict[str, object], tmdb_api_key: Optional[str]):
+    if st.button("Back"):
         st.session_state["page"] = "home"
-        st.session_state.pop("selected_movie", None)
-        st.query_params.clear()
         st.rerun()
 
     tmdb_info = fetch_tmdb_info(str(movie.get("title", "")), tmdb_api_key)
@@ -878,10 +626,15 @@ def render_watch_page(movie: dict[str, object], tmdb_api_key: Optional[str]):
         tmdb_api_key,
         size="w1280",
     )
+    media_type = str(movie.get("media_type", "movie")).strip().lower()
+    watch_url = fetch_watch_url(str(movie.get("title", "")), tmdb_api_key, media_type=media_type)
     st.markdown("<div class='hero'>", unsafe_allow_html=True)
-    st.image(poster, use_container_width=True)
     st.markdown(
-        f"<div class='hero-title'>{movie.get('title','Untitled')}</div>",
+        f"<a href='{watch_url}' target='_blank'><img src='{poster}' style='width:100%;max-width:420px;border-radius:12px;'></a>",
+        unsafe_allow_html=True,
+    )
+    st.markdown(
+        f"<div class='hero-title'><a href='{watch_url}' target='_blank' style='color:inherit;text-decoration:none;'>{movie.get('title','Untitled')}</a></div>",
         unsafe_allow_html=True,
     )
     rating_val = tmdb_info.get("rating") if tmdb_info else movie.get("rating", 0)
@@ -893,80 +646,19 @@ def render_watch_page(movie: dict[str, object], tmdb_api_key: Optional[str]):
         st.write(desc)
     st.markdown(f"**Genres:** {movie.get('genres', '')}")
     st.markdown(f"**Director:** {movie.get('director', '')}")
-    st.markdown("<div class='section-title'>Watch</div>", unsafe_allow_html=True)
-    video_db = load_video_sources()
-    custom_url = _resolve_video_url(str(movie.get("title", "")), video_db)
-    trailer = fetch_trailer_url(str(movie.get("title", "")), tmdb_api_key)
-    sources = []
-    if custom_url:
-        sources.append(("saved", "Saved stream (your URL)", custom_url))
-    if trailer:
-        sources.append(("trailer", "Trailer (YouTube)", trailer))
-    sources.append(("sample", "Sample stream (public domain)", PUBLIC_DOMAIN_STREAM))
-    source_labels = {k: label for k, label, _ in sources}
-    source_map = {k: url for k, _, url in sources}
-    default_idx = 0
-    source_choice = st.selectbox(
-        "Choose a stream source",
-        options=[k for k, _, _ in sources],
-        index=default_idx,
-        format_func=lambda k: source_labels.get(k, k),
-        key=f"source-{movie.get('title','')}",
-    )
-    play_url = source_map.get(source_choice, PUBLIC_DOMAIN_STREAM)
-    yt_embed = _youtube_embed_url(play_url)
-    if yt_embed:
-        components.html(
-            f"""
-            <div style='position:relative;padding-top:56.25%;'>
-                <iframe src="{yt_embed}" title="Trailer player" frameborder="0"
-                        allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; web-share"
-                        allowfullscreen
-                        style="position:absolute; inset:0; width:100%; height:100%; border-radius:14px;">
-                </iframe>
-            </div>
-            """,
-            height=400,
-        )
-        st.caption("Trailer is embedded from YouTube. If it doesn't load, open directly in a new tab below.")
-        st.markdown(f"[Open trailer on YouTube]({play_url})")
-    else:
-        st.video(play_url)
-    st.caption(
-        "Click play to start instantly. You can swap the source above or paste your own URL below."
-    )
+    st.markdown("</div>", unsafe_allow_html=True)
 
-    st.markdown("Add / override stream URL for this title:")
-    new_url = st.text_input("Video URL", value=custom_url or "", key=f"vid-url-{movie.get('title','')}")
-    if st.button("Save video URL", key=f"save-url-{movie.get('title','')}"):
-        if new_url.strip():
-            save_video_source(str(movie.get("title", "")), new_url.strip(), overwrite=True)
-            st.success("Saved video URL for this movie.")
-            st.query_params.clear()
-            st.rerun()
     st.markdown("<div class='section-title'>Your Rating</div>", unsafe_allow_html=True)
     current = st.session_state["user_ratings"].get(movie.get("title", ""), 0.0)
-    user_rating = st.slider("Rate this movie", 0.0, 5.0, float(current), 0.5, key=f"rating-{movie.get('title','')}")
-    col_rate1, col_rate2 = st.columns([1, 1])
-    with col_rate1:
-        if st.button("👍 Like", key=f"like-{movie.get('title','')}"):
-            user_rating = max(user_rating, 4.0)
-            st.session_state["user_ratings"][movie.get("title", "")] = user_rating
-            record_feedback(
-                mood=st.session_state.get("detected_mood"),
-                movie=movie,
-                rating=float(user_rating),
-            )
-            st.success(f"Saved as liked ({user_rating:.1f} stars).")
-    with col_rate2:
-        if st.button("💾 Save Rating", key=f"save-rating-{movie.get('title','')}"):
-            st.session_state["user_ratings"][movie.get("title", "")] = user_rating
-            record_feedback(
-                mood=st.session_state.get("detected_mood"),
-                movie=movie,
-                rating=float(user_rating),
-            )
-            st.success(f"Saved your rating: {user_rating:.1f}")
+    user_rating = st.slider("Rate this movie", 0.0, 5.0, float(current), 0.5)
+    if st.button("Save Rating"):
+        st.session_state["user_ratings"][movie.get("title", "")] = user_rating
+        record_feedback(
+            mood=st.session_state.get("detected_mood"),
+            movie=movie,
+            rating=float(user_rating),
+        )
+        st.success(f"Saved your rating: {user_rating:.1f}")
 
 
 def render_trending_page(tmdb_api_key: Optional[str]):
@@ -1010,6 +702,11 @@ def render_favorites_page(tmdb_api_key: Optional[str]):
     buf.seek(0)
     st.download_button("Download favorites (JSON)", data=buf, file_name="favorites.json", mime="application/json", key="dl-favs")
 
+
+if st.session_state.get("page") == "detail" and st.session_state.get("selected_movie"):
+    render_detail_page(st.session_state["selected_movie"], TMDB_API_KEY or None)
+    st.markdown("</div>", unsafe_allow_html=True)
+    st.stop()
 
 @st.cache_data(ttl=10 * 60)
 def _get_featured_new_release():
@@ -1134,12 +831,6 @@ def render_star_rating(rating_out_of_10: float) -> str:
         <div class='stars'>{stars}</div>
     </div>
     """
-
-# ensure watch/detail routing happens after helpers are defined
-if st.session_state.get("page") == "watch" and st.session_state.get("selected_movie"):
-    render_watch_page(st.session_state["selected_movie"], TMDB_API_KEY or None)
-    st.markdown("</div>", unsafe_allow_html=True)
-    st.stop()
 
 if "favorites" not in st.session_state:
     st.session_state["favorites"] = []
@@ -1334,7 +1025,7 @@ st.sidebar.markdown("---")
 st.sidebar.write("No backend API configured — the app reads local CSV and can trigger the embedded scraper.")
 
 # Auto-refresh loop: when enabled, periodically rerun the app which will cause the UI to reflect updated server data.
-if AUTO_REFRESH and st.session_state.get("page") != "watch":
+if AUTO_REFRESH:
     # store control flag in session state so user can uncheck to stop
     st.session_state.setdefault("_auto_refresh_on", True)
     st.session_state["_auto_refresh_on"] = True
@@ -1349,11 +1040,16 @@ if AUTO_REFRESH and st.session_state.get("page") != "watch":
         # on any interruption just continue (user may have unchecked)
         pass
 
-# auto-rotate hero once per refresh (POLL_INTERVAL) to keep movement without extra reloads
+# auto-rotate hero every 15 seconds without blocking the rest of the page
 if st.session_state.get("page") == "home":
-    featured_list = banner_movies or _get_featured_new_releases(limit=6)
+    featured_list = _get_featured_new_releases(limit=6)
     if featured_list:
-        hero_index = st.session_state.get("hero_index", 0) % len(featured_list)
-        st.session_state["hero_index"] = hero_index
+        last_tick = st.session_state.get("hero_last_tick", 0.0)
+        now = time.time()
+        if now - last_tick >= 15:
+            st.session_state["hero_last_tick"] = now
+            hero_index = st.session_state.get("hero_index", 0)
+            st.session_state["hero_index"] = (hero_index + 1) % len(featured_list)
+            st.rerun()
 
 st.markdown("</div>", unsafe_allow_html=True)
