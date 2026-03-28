@@ -10,6 +10,8 @@ import re
 import sys
 import os
 import time
+import threading
+import queue
 from urllib.parse import quote_plus
 import pandas as pd
 
@@ -395,6 +397,9 @@ else:
 st.sidebar.header("Recommendation Mode")
 mode = "Mood Based"
 st.sidebar.caption("Mood-based recommendation is always enabled.")
+
+continuous_voice = st.sidebar.checkbox("🎤 Continuous Voice Mode", value=False)
+
 NUM = st.sidebar.slider("Number of recommendations", min_value=1, max_value=50, value=30)
 AUTO_REFRESH = st.sidebar.checkbox("Enable auto-refresh (poll backend)", value=False)
 POLL_INTERVAL = 10  # refresh interval in seconds
@@ -403,6 +408,10 @@ content_types = st.sidebar.multiselect(
     options=["Movies", "TV Shows"],
     default=["Movies", "TV Shows"],
 )
+
+st.session_state.setdefault("voice_transcript", "")
+st.session_state.setdefault("voice_mood", "calm")
+
 if TMDB_API_KEY:
     with st.sidebar.expander("Trailer prefetch"):
         if st.button("Fetch trailers for all movies", use_container_width=True):
@@ -565,47 +574,53 @@ def fetch_banner_image_url(
 
 
 def show_movie_card(movie: dict[str, object], tmdb_api_key: Optional[str]):
+    """Render a clickable movie poster card with rating."""
     poster_value = movie.get('poster_path')
     title_str = str(movie.get("title", ""))
     media_type = str(movie.get("media_type", "movie")).strip().lower()
-    token = _watch_token_from_title(title_str)
-    watch_map = st.session_state.setdefault("watch_map", {})
-    watch_map[token] = movie
+    
     poster = fetch_poster_url(
         title_str,
         poster_value if isinstance(poster_value, str) else None,
         tmdb_api_key,
-        size="w780",
+        size="w500",
     )
-    watch_url = fetch_watch_url(title_str, tmdb_api_key, media_type=media_type)
-    if not poster.strip():
+    if not poster or poster.strip() == PLACEHOLDER_URL:
         poster = PLACEHOLDER_URL
+    
+    watch_url = fetch_watch_url(title_str, tmdb_api_key, media_type=media_type)
+    
     st.markdown(
         f"""
-        <a class='poster-link' href="{watch_url}" target="_self">
-            <div class='poster-card'>
-                <div class='poster-frame'>
-                    <img src='{poster}' class='poster-img' alt='{title_str} poster'>
-                    <div class='poster-overlay'></div>
-                </div>
-                <div class='poster-meta'>
-                    <div class='poster-title'>{movie.get('title','Untitled')}</div>
-                    <div class='poster-sub'>{movie.get('genres','')}</div>
-                </div>
+        <a href="{watch_url}" target="_blank" style="text-decoration:none;">
+        <div class='poster-card'>
+            <div class='poster-frame'>
+                <img src='{poster}' class='poster-img' alt='{title_str} poster' loading='lazy'>
+                <div class='poster-overlay'></div>
             </div>
+            <div class='poster-meta'>
+                <div class='poster-title'>{movie.get('title','Untitled')}</div>
+                <div class='poster-sub'>{movie.get('genres','N/A')}</div>
+            </div>
+        </div>
         </a>
         """,
         unsafe_allow_html=True,
     )
-    tmdb_info = fetch_tmdb_info(str(movie.get("title", "")), tmdb_api_key)
-    rating_val = tmdb_info.get("rating") if tmdb_info else None
-    if rating_val is None or rating_val == "":
-        rating_val = movie.get("rating", 0)
-    st.markdown(render_star_rating(rating_val), unsafe_allow_html=True)
-    st.caption(f"Director: {movie.get('director', '') or '—'}")
-    if st.button("Add to favorites", key=f"fav-{movie.get('title','')}", use_container_width=True):
-        favs = st.session_state.get("favorites", [])
-        if movie.get('title') not in [m.get('title') for m in favs]:
+    
+    # TMDB rating
+    tmdb_info = fetch_tmdb_info(title_str, tmdb_api_key)
+    rating_val = tmdb_info.get("rating") if tmdb_info else movie.get("rating", None)
+    if rating_val is None or str(rating_val).strip() == "":
+        rating_val = 0.0
+    
+    st.markdown(render_star_rating(float(rating_val)), unsafe_allow_html=True)
+    st.caption(f"Director: {movie.get('director', '—')}")
+    
+    # Favorite button
+    if st.button("⭐ Add to favorites", key=f"fav-{title_str[:20]}", use_container_width=True):
+        favs = st.session_state.setdefault("favorites", [])
+        if not any(m.get('title', '') == title_str for m in favs):
             favs.append(movie)
             st.session_state["favorites"] = favs
             record_feedback(
@@ -613,7 +628,8 @@ def show_movie_card(movie: dict[str, object], tmdb_api_key: Optional[str]):
                 movie=movie,
                 favorite=True,
             )
-            st.success("Added to favorites")
+            st.success("Added to favorites!")
+
     
 
 @st.cache_data(ttl=10 * 60)
@@ -1159,77 +1175,87 @@ st.markdown("<div class='section-title'>Recommendations</div>", unsafe_allow_htm
 # Mood-based flow using backend-only private sensing
 if mode == "Mood Based":
     st.session_state.setdefault("recent_detected_moods", [])
-    st.session_state.setdefault("private_scan_allowed", False)
     st.session_state.setdefault("last_private_scan_ts", 0.0)
-    st.session_state.setdefault("scan_interval_sec", 5.0)
+st.session_state.setdefault("scan_interval_sec", 3.0 if not continuous_voice else 1.5)
 
-    if not st.session_state["private_scan_allowed"]:
-        st.subheader("Private Mood Scan")
-        st.caption("Allow once. After that, mood scanning runs automatically in backend.")
-        if st.button("Allow and start", use_container_width=True):
-            st.session_state["private_scan_allowed"] = True 
-            st.rerun() 
-    else:
-        now = time.time()
-        should_scan = (
-            ("detected_mood" not in st.session_state)
-            or (
-                now - float(st.session_state.get("last_private_scan_ts", 0.0))
-                >= float(st.session_state.get("scan_interval_sec", 5.0))
-            )
+    now = time.time()
+    should_scan = (
+        ("detected_mood" not in st.session_state)
+        or (
+            now - float(st.session_state.get("last_private_scan_ts", 0.0))
+            >= float(st.session_state.get("scan_interval_sec", 3.0))
         )
-        if manual_override:
-            should_scan = False
-            st.caption("Voice + mood scanning paused while you search or filter genres.")
-        if should_scan:
-            st.session_state["last_private_scan_ts"] = now
-            try:
-                final_details = detect_multimodal_mood_backend(
-                    voice_duration_sec=2.0,
-                    use_parallel_threads=True,
-                )
-            except RuntimeError:
-                final_details = None
+    )
+    
+    # Live Voice Component
+    if continuous_voice:
+        with st.container():
+            st.markdown("## 🎤 Live Voice Listening")
+            components.html(
+                open("web/live_voice.html", "r", encoding="utf-8").read(),
+                height=420,
+                scrolling=True
+            )
+            col1, col2 = st.columns(2)
+            with col1:
+                st.metric("Live Transcript", st.session_state.get("voice_transcript", "Listening...")[:50] + "..." if len(st.session_state.get("voice_transcript", "")) > 50 else st.session_state.get("voice_transcript", "Listening..."))
+            with col2:
+                st.metric("Voice Mood", st.session_state.get("voice_mood", "calm").upper())
 
-            if final_details:
-                spoken_text = str(final_details.get("spoken_text", "")).strip()
-                if spoken_text:
-                    st.session_state["last_voice_transcript"] = spoken_text
-                    matched = _resolve_voice_title(spoken_text, _apply_content_filter(load_movies()))
-                    if matched:
-                        st.session_state["voice_title_query"] = matched
-                    else:
-                        st.session_state["voice_title_query"] = spoken_text
-                transcript_err = str(final_details.get("voice_transcript_error", "")).strip()
-                if transcript_err and not spoken_text:
-                    st.caption(f"Voice transcript issue: {_friendly_transcript_issue(transcript_err)}")
+    if manual_override:
+        should_scan = False
+        st.caption("Mood scanning paused while you search or filter genres.")
+    if should_scan:
+        st.session_state["last_private_scan_ts"] = now
+        try:
+            final_details = detect_multimodal_mood_backend(
+                voice_duration_sec=2.0,
+                use_parallel_threads=True,
+            )
+        except RuntimeError:
+            final_details = None
 
-            mood = final_details["mood"] if final_details else None
-            if mood:
-                st.session_state["last_mood_source"] = str(final_details.get("source", "unknown"))
-                top_moods = final_details.get("top_moods", [])
-                recent = st.session_state.get("recent_detected_moods", [])
-                if len(recent) >= 3 and all(m == mood for m in recent[-3:]) and len(top_moods) > 1:
-                    first_name, first_score = top_moods[0]
-                    second_name, second_score = top_moods[1]
-                    if second_name != first_name and second_score >= (0.75 * first_score):
-                        mood = second_name
-                recent.append(mood)
-                st.session_state["recent_detected_moods"] = recent[-6:]
-                st.session_state["detected_mood"] = mood
+        if final_details:
+            spoken_text = str(final_details.get("spoken_text", "")).strip()
+            if spoken_text:
+                st.session_state["last_voice_transcript"] = spoken_text
+                matched = _resolve_voice_title(spoken_text, _apply_content_filter(load_movies()))
+                if matched:
+                    st.session_state["voice_title_query"] = matched
+                else:
+                    st.session_state["voice_title_query"] = spoken_text
+            transcript_err = str(final_details.get("voice_transcript_error", "")).strip()
+            if transcript_err and not spoken_text:
+                st.caption(f"Voice transcript issue: {_friendly_transcript_issue(transcript_err)}")
 
-        if st.session_state.get("detected_mood"):
-            source = str(st.session_state.get("last_mood_source", "face")).upper()
-            st.caption(f"Detected mood: {str(st.session_state.get('detected_mood')).upper()} | Source: {source}")
-        if not _HAS_SOUNDDEVICE:
-            st.caption("Voice backend unavailable in this runtime (install `sounddevice` + PortAudio). Using face-only.")
+        mood = final_details["mood"] if final_details else None
+        if mood:
+            st.session_state["last_mood_source"] = str(final_details.get("source", "unknown"))
+            top_moods = final_details.get("top_moods", [])
+            recent = st.session_state.get("recent_detected_moods", [])
+            if len(recent) >= 3 and all(m == mood for m in recent[-3:]) and len(top_moods) > 1:
+                first_name, first_score = top_moods[0]
+                second_name, second_score = top_moods[1]
+                if second_name != first_name and second_score >= (0.75 * first_score):
+                    mood = second_name
+            recent.append(mood)
+            st.session_state["recent_detected_moods"] = recent[-6:]
+            st.session_state["detected_mood"] = mood
+
+
+        st.caption(f"Detected mood: {str(st.session_state.get('detected_mood')).upper()} | Source: {st.session_state.get('last_mood_source', 'unknown')}")
+    if not _HAS_SOUNDDEVICE:
+        st.caption("Voice backend unavailable in this runtime (install `sounddevice` + PortAudio). Using face-only.")
     st.markdown("---")
 
 # auto-search on input/genre selection (no button)
 detected_mood = st.session_state.get("detected_mood")
 voice_title = str(st.session_state.get("voice_title_query", "")).strip()
-title = typed_query or voice_title
-if voice_title and not typed_query:
+voice_live = st.session_state.get("voice_transcript", "").strip()
+title = typed_query or voice_live or voice_title
+if voice_live:
+    st.caption(f"🔴 Live voice: **{voice_live}**")
+if voice_title and not typed_query and not voice_live:
     st.caption(f"Voice movie request: **{voice_title}**")
 
 if title:
@@ -1351,7 +1377,7 @@ if AUTO_REFRESH and st.session_state.get("page") != "watch":
 
 # auto-rotate hero once per refresh (POLL_INTERVAL) to keep movement without extra reloads
 if st.session_state.get("page") == "home":
-    featured_list = banner_movies or _get_featured_new_releases(limit=6)
+    featured_list = banner_movies or _get_featured_new_releases(limit=8)
     if featured_list:
         hero_index = st.session_state.get("hero_index", 0) % len(featured_list)
         st.session_state["hero_index"] = hero_index
