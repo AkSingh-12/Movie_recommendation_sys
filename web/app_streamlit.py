@@ -398,10 +398,9 @@ st.sidebar.header("Recommendation Mode")
 mode = "Mood Based"
 st.sidebar.caption("Mood-based recommendation is always enabled.")
 
-continuous_voice = st.sidebar.checkbox("🎤 Continuous Voice Mode", value=False)
-
+continuous_voice = False
 NUM = st.sidebar.slider("Number of recommendations", min_value=1, max_value=50, value=30)
-AUTO_REFRESH = st.sidebar.checkbox("Enable auto-refresh (poll backend)", value=False)
+AUTO_REFRESH = False
 POLL_INTERVAL = 10  # refresh interval in seconds
 content_types = st.sidebar.multiselect(
     "Content type",
@@ -1176,31 +1175,16 @@ st.markdown("<div class='section-title'>Recommendations</div>", unsafe_allow_htm
 if mode == "Mood Based":
     st.session_state.setdefault("recent_detected_moods", [])
     st.session_state.setdefault("last_private_scan_ts", 0.0)
-st.session_state.setdefault("scan_interval_sec", 3.0 if not continuous_voice else 1.5)
+    st.session_state.setdefault("scan_interval_sec", 6.0)
 
     now = time.time()
     should_scan = (
         ("detected_mood" not in st.session_state)
         or (
             now - float(st.session_state.get("last_private_scan_ts", 0.0))
-            >= float(st.session_state.get("scan_interval_sec", 3.0))
+            >= float(st.session_state.get("scan_interval_sec", 6.0))
         )
     )
-    
-    # Live Voice Component
-    if continuous_voice:
-        with st.container():
-            st.markdown("## 🎤 Live Voice Listening")
-            components.html(
-                open("web/live_voice.html", "r", encoding="utf-8").read(),
-                height=420,
-                scrolling=True
-            )
-            col1, col2 = st.columns(2)
-            with col1:
-                st.metric("Live Transcript", st.session_state.get("voice_transcript", "Listening...")[:50] + "..." if len(st.session_state.get("voice_transcript", "")) > 50 else st.session_state.get("voice_transcript", "Listening..."))
-            with col2:
-                st.metric("Voice Mood", st.session_state.get("voice_mood", "calm").upper())
 
     if manual_override:
         should_scan = False
@@ -1359,21 +1343,7 @@ if mode == "Mood Based":
 st.sidebar.markdown("---")
 st.sidebar.write("No backend API configured — the app reads local CSV and can trigger the embedded scraper.")
 
-# Auto-refresh loop: when enabled, periodically rerun the app which will cause the UI to reflect updated server data.
-if AUTO_REFRESH and st.session_state.get("page") != "watch":
-    # store control flag in session state so user can uncheck to stop
-    st.session_state.setdefault("_auto_refresh_on", True)
-    st.session_state["_auto_refresh_on"] = True
-    placeholder = st.empty()
-    # Blocking loop that sleeps then triggers a rerun; Streamlit will re-run script after rerun()
-    # This is intentionally simple and user-controlled via the sidebar checkbox.
-    try:
-        time.sleep(POLL_INTERVAL)
-        # simply rerun to refresh local data view
-        st.rerun()
-    except Exception:
-        # on any interruption just continue (user may have unchecked)
-        pass
+# Auto-refresh loop: DISABLED per task requirements
 
 # auto-rotate hero once per refresh (POLL_INTERVAL) to keep movement without extra reloads
 if st.session_state.get("page") == "home":

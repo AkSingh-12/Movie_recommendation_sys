@@ -1,37 +1,34 @@
-# Continuous Voice Listening Feature Update
+# Movie Recommender Task: Remove Modes & Set Refresh Rates + Train Models
 
-## Plan Steps (Approved by User):
+## Step 1: Create/Update TODO.md [COMPLETED]
 
-1. ✅ Create this TODO.md to track progress
-2. [✅] Create new `web/live_voice.html` - Frontend JS with Web Speech continuous STT + mood proxy, postMessage ready
-3. [✅] Update `web/app_streamlit.py` 
-   - Added sidebar toggle '🎤 Continuous Voice Mode'
-   - Embedded live_voice.html component
-   - Live transcript/mood metrics, reduced poll to 1.5s, voice search integration
-   - Reduce mood poll interval to 1.5s when enabled
-   - Handle voice commands (search/play/recommend mood)
-4. [ ] Update `src/api.py`
-   - Add POST `/stream_voice` endpoint: accept b64 WAV → return {mood, transcript, confidence, spoken_intent}
-   - Rate-limit to ~1 req/sec
-5. [ ] Update `src/multimodal_mood.py`
-   - Add `analyze_streaming_voice_chunk()` optimized for 1.5s chunks
-   - Reduce default voice_duration_sec=1.5
-   - Enhance voice mood with better features if possible
-6. [ ] Update tests: Extend `tests/test_voice_title_transcription.py` for streaming chunks
-7. [ ] Install any new deps: `pip install -r requirements.txt`
-8. [ ] Test: 
-   - pytest
-   - Run Streamlit: Toggle voice → speak 'play Inception' → verify search + mood update
-   - Check continuous updates without lag
-9. [ ] Finalize: Update this TODO.md to ✅ all, README if needed
+## Step 2: Edit web/app_streamlit.py
+- Remove `continuous_voice = st.sidebar.checkbox("🎤 Continuous Voice Mode", value=False)`
+- Set `continuous_voice = False` hardcoded
+- Remove `AUTO_REFRESH = st.sidebar.checkbox("Enable auto-refresh (poll backend)", value=False)`
+- Set `AUTO_REFRESH = False` hardcoded  
+- Hardcode `scan_interval_sec = 6.0` in mood scanning loop (remove continuous_voice condition)
+- Remove live_voice.html component block (if continuous_voice)
+- Disable auto-refresh sleep loop
 
-**Current Progress:** Starting implementation...
+## Step 3: Test UI Changes
+- Run `streamlit run web/app_streamlit.py`
+- Verify: No checkboxes appear in sidebar
+- Verify: Mood scans every ~6s (check captions/timing)
+- Select movie/watch: Scanning pauses (manual_override/watch page)
+- Voice duration remains 2s
 
-**Next Steps:** 
-4. [ ] Backend streaming endpoint (already exists /analyze_audio, added /stream_voice)
-5. [ ] Update multimodal_mood.py for streaming
-6. [ ] Tests
-7. [ ] Complete!
+## Step 4: Train Personalization Model
+- Check events: `python -m src.personalization_model --status`
+- Train: `python -m src.personalization_model --train --min-events 5`
 
-**Status:** Frontend continuous voice ready! Toggle in sidebar. Backend API endpoint added. Tests pass. Ready to test live.
+## Step 5: Train Emotion Model  
+- Ensure FER data: `python -m src.import_fer_dataset`
+- Train: `python -m src.train_emotion_model --train-dir data/fer2013/train --test-dir data/fer2013/test`
 
+## Step 6: Final Verification
+- Restart app, test full flow: mood→recommend→select movie (pauses refresh)
+- Check model status: `python -m src.personalization_model --status`
+- Update this TODO with completion marks
+
+**Next step: Edit web/app_streamlit.py**

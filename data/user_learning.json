@@ -13,12 +13,12 @@
     "angry": {
       "adventure": 1.2,
       "thriller": 1.7999999999999998,
-      "science fiction": 0.6,
+      "science fiction": 0.7,
       "romance": 0.6,
       "mystery": 0.6,
       "horror": 0.6,
       "animation": 0.6,
-      "action": 0.6,
+      "action": 0.8,
       "tv movie": 0.6,
       "comedy": 0.6
     }
