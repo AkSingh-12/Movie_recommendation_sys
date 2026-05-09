@@ -1,7 +1,7 @@
 import streamlit as st
 import streamlit.components.v1 as components
 import requests
-from typing import Optional
+from typing import Optional, Any, cast
 from pathlib import Path
 import json
 import io
@@ -10,16 +10,14 @@ import re
 import sys
 import os
 import time
-import threading
-import queue
 from urllib.parse import quote_plus
 import pandas as pd
 
 try:
-    import sounddevice as _sd  # noqa: F401
-    _HAS_SOUNDDEVICE = True
+    import sounddevice  # noqa: F401
+    _has_sounddevice = True
 except Exception:
-    _HAS_SOUNDDEVICE = False
+    _has_sounddevice = False
 
 # Ensure project root is on sys.path so `src` imports work when Streamlit
 # runs with a different CWD. This inserts the repo root (one level up from
@@ -52,7 +50,6 @@ def _video_store_path() -> Path:
     p.mkdir(parents=True, exist_ok=True)
     return p / "video_sources.json"
 
-
 def load_video_sources() -> dict[str, str]:
     """Load a title->video_url mapping from data/video_sources.json."""
     try:
@@ -64,15 +61,23 @@ def load_video_sources() -> dict[str, str]:
         if isinstance(data, list):
             out: dict[str, str] = {}
             for item in data:
-                if isinstance(item, dict) and item.get("title") and item.get("url"):
-                    out[str(item["title"]).lower()] = str(item["url"])
+                if not isinstance(item, dict):
+                    continue
+                item_dict = cast(dict[str, Any], item)
+                title = item_dict.get("title")
+                url = item_dict.get("url")
+                if title and url:
+                    out[str(title).lower()] = str(url)
             return out
         if isinstance(data, dict):
-            return {str(k).lower(): str(v) for k, v in data.items() if v}
+            return {
+                str(k).lower(): str(v)
+                for k, v in cast(dict[str, Any], data).items()
+                if v
+            }
     except Exception:
         pass
     return {}
-
 
 def save_video_source(title: str, url: str, overwrite: bool = False) -> None:
     """Persist a video URL for a given title."""
@@ -88,7 +93,6 @@ def save_video_source(title: str, url: str, overwrite: bool = False) -> None:
         path.write_text(json.dumps(db, ensure_ascii=False, indent=2), encoding="utf-8")
     except Exception:
         pass
-
 
 def _resolve_video_url(title: str, db: dict[str, str]) -> Optional[str]:
     """Resolve a playable URL for a title from the local db (case-insensitive, slug)."""
@@ -106,7 +110,6 @@ def _resolve_video_url(title: str, db: dict[str, str]) -> Optional[str]:
             return v
     return None
 
-
 def _youtube_embed_url(url: str) -> Optional[str]:
     """Convert a YouTube watch/short link to an embeddable URL."""
     if not url:
@@ -123,7 +126,6 @@ def _youtube_embed_url(url: str) -> Optional[str]:
             return f"https://www.youtube.com/embed/{vid}"
     return None
 
-
 def fetch_trailer_url(title: str, tmdb_api_key: Optional[str]) -> Optional[str]:
     """Try to grab a YouTube trailer URL from TMDB."""
     if not tmdb_api_key or not title:
@@ -135,10 +137,11 @@ def fetch_trailer_url(title: str, tmdb_api_key: Optional[str]) -> Optional[str]:
             timeout=6,
         )
         search.raise_for_status()
-        results = search.json().get("results") or []
+        data = cast(dict[str, Any], search.json())
+        results = cast(list[dict[str, Any]], data.get("results") or [])
         if not results:
             return None
-        movie_id = results[0].get("id")
+        movie_id = cast(Optional[int], results[0].get("id"))
         if not movie_id:
             return None
         vids = requests.get(
@@ -147,14 +150,19 @@ def fetch_trailer_url(title: str, tmdb_api_key: Optional[str]) -> Optional[str]:
             timeout=6,
         )
         vids.raise_for_status()
-        videos = vids.json().get("results") or []
+        vids_data = cast(dict[str, Any], vids.json())
+        videos = cast(list[dict[str, Any]], vids_data.get("results") or [])
         for v in videos:
-            if v.get("site") == "YouTube" and v.get("type") in {"Trailer", "Teaser"} and v.get("key"):
-                return f"https://www.youtube.com/watch?v={v['key']}"
+            if not isinstance(v, dict):
+                continue
+            site = cast(Optional[str], v.get("site"))
+            type_ = cast(Optional[str], v.get("type"))
+            key = cast(Optional[str], v.get("key"))
+            if site == "YouTube" and type_ in {"Trailer", "Teaser"} and key:
+                return f"https://www.youtube.com/watch?v={key}"
     except Exception:
         return None
     return None
-
 
 def populate_video_db_with_trailers(tmdb_api_key: Optional[str], limit: int = 150) -> int:
     """Fetch YouTube trailers via TMDB and cache them into the local video DB."""
@@ -397,20 +405,14 @@ else:
 st.sidebar.header("Recommendation Mode")
 mode = "Mood Based"
 st.sidebar.caption("Mood-based recommendation is always enabled.")
-
-continuous_voice = False
 NUM = st.sidebar.slider("Number of recommendations", min_value=1, max_value=50, value=30)
-AUTO_REFRESH = False
+AUTO_REFRESH = st.sidebar.checkbox("Enable auto-refresh (poll backend)", value=False)
 POLL_INTERVAL = 10  # refresh interval in seconds
 content_types = st.sidebar.multiselect(
     "Content type",
     options=["Movies", "TV Shows"],
     default=["Movies", "TV Shows"],
 )
-
-st.session_state.setdefault("voice_transcript", "")
-st.session_state.setdefault("voice_mood", "calm")
-
 if TMDB_API_KEY:
     with st.sidebar.expander("Trailer prefetch"):
         if st.button("Fetch trailers for all movies", use_container_width=True):
@@ -436,7 +438,6 @@ def _clean_poster_value(value: Optional[str]) -> Optional[str]:
         return stripped or None
     return None
 
-
 def _friendly_transcript_issue(raw_error: str) -> str:
     text = str(raw_error or "").strip()
     if not text:
@@ -451,7 +452,6 @@ def _friendly_transcript_issue(raw_error: str) -> str:
     if "speech_recognition_missing" in low:
         return "Speech recognition package is missing on the server."
     return "Voice transcription is currently unavailable."
-
 
 @st.cache_data(ttl=60 * 60)
 def fetch_poster_url(
@@ -491,7 +491,6 @@ def fetch_poster_url(
 
     return PLACEHOLDER_URL
 
-
 @st.cache_data(ttl=60 * 60)
 def fetch_watch_url(
     title: Optional[str],
@@ -504,7 +503,6 @@ def fetch_watch_url(
         return "#"
     token = _watch_token_from_title(title_str)
     return f"?watch_token={token}&watch_title={quote_plus(title_str)}"
-
 
 @st.cache_data(ttl=10 * 60)
 def fetch_banner_image_url(
@@ -537,14 +535,17 @@ def fetch_banner_image_url(
                 timeout=6,
             )
             resp.raise_for_status()
-            results = resp.json().get("results") or []
+            data = cast(dict[str, Any], resp.json())
+            results = cast(list[dict[str, Any]], data.get("results") or [])
             for r in results:
-                backdrop_path = r.get("backdrop_path")
+                if not isinstance(r, dict):
+                    continue
+                backdrop_path = cast(Optional[str], r.get("backdrop_path"))
                 if backdrop_path:
                     return _fit_for_banner(f"https://image.tmdb.org/t/p/{size}{backdrop_path}")
                 # try full image list to find a landscape-friendly backdrop
-                movie_id = r.get("id")
-                if movie_id:
+                movie_id = cast(Optional[int], r.get("id"))
+                if movie_id is not None:
                     try:
                         imgs = requests.get(
                             f"https://api.themoviedb.org/3/movie/{movie_id}/images",
@@ -552,13 +553,17 @@ def fetch_banner_image_url(
                             timeout=6,
                         )
                         imgs.raise_for_status()
-                        backdrops = imgs.json().get("backdrops") or []
+                        imgs_data = cast(dict[str, Any], imgs.json())
+                        backdrops = cast(list[dict[str, Any]], imgs_data.get("backdrops") or [])
                         for b in backdrops:
-                            w = b.get("width") or 0
-                            h = b.get("height") or 1
-                            ar = w / h
-                            if w >= 1200 and 1.5 <= ar <= 2.35 and b.get("file_path"):
-                                return _fit_for_banner(f"https://image.tmdb.org/t/p/original{b['file_path']}")
+                            if not isinstance(b, dict):
+                                continue
+                            w = int(b.get("width") or 0)
+                            h = int(b.get("height") or 1)
+                            ar = float(w) / float(h)
+                            file_path = cast(Optional[str], b.get("file_path"))
+                            if w >= 1200 and 1.5 <= ar <= 2.35 and file_path:
+                                return _fit_for_banner(f"https://image.tmdb.org/t/p/original{file_path}")
                     except Exception:
                         pass
             # if none have backdrops, fall through to fallback
@@ -571,55 +576,48 @@ def fetch_banner_image_url(
     # last resort: return placeholder so old/non-fitting posters are not reused
     return PLACEHOLDER_URL
 
-
 def show_movie_card(movie: dict[str, object], tmdb_api_key: Optional[str]):
-    """Render a clickable movie poster card with rating."""
     poster_value = movie.get('poster_path')
     title_str = str(movie.get("title", ""))
     media_type = str(movie.get("media_type", "movie")).strip().lower()
-    
+    token = _watch_token_from_title(title_str)
+    watch_map = st.session_state.setdefault("watch_map", {})
+    watch_map[token] = movie
     poster = fetch_poster_url(
         title_str,
         poster_value if isinstance(poster_value, str) else None,
         tmdb_api_key,
-        size="w500",
+        size="w780",
     )
-    if not poster or poster.strip() == PLACEHOLDER_URL:
-        poster = PLACEHOLDER_URL
-    
     watch_url = fetch_watch_url(title_str, tmdb_api_key, media_type=media_type)
-    
+    if not poster.strip():
+        poster = PLACEHOLDER_URL
     st.markdown(
         f"""
-        <a href="{watch_url}" target="_blank" style="text-decoration:none;">
-        <div class='poster-card'>
-            <div class='poster-frame'>
-                <img src='{poster}' class='poster-img' alt='{title_str} poster' loading='lazy'>
-                <div class='poster-overlay'></div>
+        <a class='poster-link' href="{watch_url}" target="_self">
+            <div class='poster-card'>
+                <div class='poster-frame'>
+                    <img src='{poster}' class='poster-img' alt='{title_str} poster'>
+                    <div class='poster-overlay'></div>
+                </div>
+                <div class='poster-meta'>
+                    <div class='poster-title'>{movie.get('title','Untitled')}</div>
+                    <div class='poster-sub'>{movie.get('genres','')}</div>
+                </div>
             </div>
-            <div class='poster-meta'>
-                <div class='poster-title'>{movie.get('title','Untitled')}</div>
-                <div class='poster-sub'>{movie.get('genres','N/A')}</div>
-            </div>
-        </div>
         </a>
         """,
         unsafe_allow_html=True,
     )
-    
-    # TMDB rating
-    tmdb_info = fetch_tmdb_info(title_str, tmdb_api_key)
-    rating_val = tmdb_info.get("rating") if tmdb_info else movie.get("rating", None)
-    if rating_val is None or str(rating_val).strip() == "":
-        rating_val = 0.0
-    
-    st.markdown(render_star_rating(float(rating_val)), unsafe_allow_html=True)
-    st.caption(f"Director: {movie.get('director', '—')}")
-    
-    # Favorite button
-    if st.button("⭐ Add to favorites", key=f"fav-{title_str[:20]}", use_container_width=True):
-        favs = st.session_state.setdefault("favorites", [])
-        if not any(m.get('title', '') == title_str for m in favs):
+    tmdb_info = fetch_tmdb_info(str(movie.get("title", "")), tmdb_api_key)
+    rating_val = tmdb_info.get("rating") if tmdb_info else None
+    if rating_val is None or rating_val == "":
+        rating_val = movie.get("rating", 0)
+    st.markdown(render_star_rating(rating_val), unsafe_allow_html=True)
+    st.caption(f"Director: {movie.get('director', '') or '—'}")
+    if st.button("Add to favorites", key=f"fav-{movie.get('title','')}", use_container_width=True):
+        favs = st.session_state.get("favorites", [])
+        if movie.get('title') not in [m.get('title') for m in favs]:
             favs.append(movie)
             st.session_state["favorites"] = favs
             record_feedback(
@@ -627,16 +625,14 @@ def show_movie_card(movie: dict[str, object], tmdb_api_key: Optional[str]):
                 movie=movie,
                 favorite=True,
             )
-            st.success("Added to favorites!")
-
-    
+            st.success("Added to favorites")
 
 @st.cache_data(ttl=10 * 60)
 def _get_all_genres() -> list[str]:
     df = _apply_content_filter(load_movies())
     if "genres" not in df.columns or df.empty:
         return []
-    genres = set()
+    genres: set[str] = set()
     for raw in df["genres"].fillna("").astype(str).tolist():
         if not raw.strip():
             continue
@@ -667,7 +663,6 @@ def _resolve_movie_by_title(title: str) -> Optional[dict]:
         return None
     return None
 
-
 def _clear_watch_param():
     """Remove watch query param to allow normal navigation."""
     try:
@@ -675,12 +670,10 @@ def _clear_watch_param():
     except Exception:
         pass
 
-
 def _watch_token_from_title(title: str) -> str:
     """Create a stable, URL-safe token from a title."""
     slug = re.sub(r"[^a-zA-Z0-9]+", "-", title.lower()).strip("-")
     return slug or "untitled"
-
 
 def _title_from_token(token: str) -> str:
     """Best-effort conversion from a watch token back to a readable title."""
@@ -689,7 +682,6 @@ def _title_from_token(token: str) -> str:
         return ""
     words = token.replace("-", " ")
     return " ".join(w.capitalize() for w in words.split())
-
 
 def _apply_content_filter(df: pd.DataFrame) -> pd.DataFrame:
     """Filter dataset by sidebar content type selection when media_type exists."""
@@ -701,6 +693,7 @@ def _apply_content_filter(df: pd.DataFrame) -> pd.DataFrame:
     if "media_type" not in df.columns:
         return df
     allowed = set()
+    allowed: set[str] = set()
     if "Movies" in selected:
         allowed.add("movie")
     if "TV Shows" in selected:
@@ -709,7 +702,6 @@ def _apply_content_filter(df: pd.DataFrame) -> pd.DataFrame:
         return df.iloc[0:0]
     mt = df["media_type"].fillna("").astype(str).str.lower()
     return df[mt.isin(allowed)]
-
 
 def _resolve_voice_title(spoken_text: str, df: pd.DataFrame) -> Optional[str]:
     text = str(spoken_text or "").strip()
@@ -725,7 +717,6 @@ def _resolve_voice_title(spoken_text: str, df: pd.DataFrame) -> Optional[str]:
     close = get_close_matches(text, titles, n=1, cutoff=0.55)
     return close[0] if close else None
 
-
 def _sort_matches_by_rating(df: pd.DataFrame) -> pd.DataFrame:
     if df.empty:
         return df
@@ -734,7 +725,6 @@ def _sort_matches_by_rating(df: pd.DataFrame) -> pd.DataFrame:
         out.loc[:, "rating"] = pd.to_numeric(out["rating"], errors="coerce")
         out = out.sort_values(by="rating", ascending=False)
     return out
-
 
 st.markdown("<div class='app-shell'>", unsafe_allow_html=True)
 st.session_state.setdefault("page", "home")
@@ -777,7 +767,7 @@ st.session_state.setdefault("page", "home")
 st.session_state.setdefault("user_ratings", {})
 selected_genres: list[str] = []
 
-def _build_banner_pool(tmdb_key: Optional[str]) -> list[dict]:
+def _build_banner_pool(tmdb_key: Optional[str]) -> list[dict[str, str]]:
     """Use a stable set of known 16:9 backdrops to avoid missing/blank banners."""
     return [
         {"title": "Inception", "genres": "Action|Sci-Fi", "banner_url": "https://image.tmdb.org/t/p/original/s3TBrRGB1iav7gFOCNx3H31MoES.jpg"},
@@ -788,7 +778,6 @@ def _build_banner_pool(tmdb_key: Optional[str]) -> list[dict]:
         {"title": "Mad Max: Fury Road", "genres": "Action|Adventure", "banner_url": "https://image.tmdb.org/t/p/original/1g0dhYtq4irTY1GPXvft6k4YLjm.jpg"},
     ]
 
-
 banner_movies = _build_banner_pool(TMDB_API_KEY or None)
 
 if "hero_index" not in st.session_state:
@@ -797,14 +786,20 @@ elif banner_movies:
     st.session_state["hero_index"] = (st.session_state["hero_index"] + 1) % len(banner_movies)
 
 banner_index = st.session_state["hero_index"] % max(1, len(banner_movies))
-banner_main = banner_movies[banner_index] if banner_movies else {"title": "Featured Movies", "genres": "Movies|Series"}
-banner_token = _watch_token_from_title(str(banner_main.get("title", "")))
+banner_main: dict[str, Any] = banner_movies[banner_index] if banner_movies else {"title": "Featured Movies", "genres": "Movies|Series"}
+banner_main = cast(dict[str, Any], banner_main)
+banner_title = banner_main.get("title", "") or ""
+banner_token = _watch_token_from_title(banner_title)
 st.session_state.setdefault("watch_map", {})[banner_token] = banner_main
+banner_title = str(banner_main.get("title") or "")
+banner_poster_path = banner_main.get("poster_path")
+if not isinstance(banner_poster_path, str):
+    banner_poster_path = None
 banner_poster = (
     banner_main.get("banner_url")
     or fetch_banner_image_url(
-        str(banner_main.get("title", "")),
-        banner_main.get("poster_path") if isinstance(banner_main.get("poster_path"), str) else None,
+        banner_title,
+        banner_poster_path,
         TMDB_API_KEY or None,
         size="original",
     )
@@ -878,7 +873,6 @@ else:
     if watch_token or target_title:
         st.query_params.clear()
 
-
 def render_watch_page(movie: dict[str, object], tmdb_api_key: Optional[str]):
     if st.button("Back to Home"):
         st.session_state["page"] = "home"
@@ -887,9 +881,10 @@ def render_watch_page(movie: dict[str, object], tmdb_api_key: Optional[str]):
         st.rerun()
 
     tmdb_info = fetch_tmdb_info(str(movie.get("title", "")), tmdb_api_key)
+    poster_path_value = movie.get("poster_path")
     poster = fetch_poster_url(
         str(movie.get("title", "")),
-        movie.get("poster_path") if isinstance(movie.get("poster_path"), str) else None,
+        poster_path_value if isinstance(poster_path_value, str) else None,
         tmdb_api_key,
         size="w1280",
     )
@@ -912,7 +907,7 @@ def render_watch_page(movie: dict[str, object], tmdb_api_key: Optional[str]):
     video_db = load_video_sources()
     custom_url = _resolve_video_url(str(movie.get("title", "")), video_db)
     trailer = fetch_trailer_url(str(movie.get("title", "")), tmdb_api_key)
-    sources = []
+    sources: list[tuple[str, str, str]] = []
     if custom_url:
         sources.append(("saved", "Saved stream (your URL)", custom_url))
     if trailer:
@@ -925,7 +920,7 @@ def render_watch_page(movie: dict[str, object], tmdb_api_key: Optional[str]):
         "Choose a stream source",
         options=[k for k, _, _ in sources],
         index=default_idx,
-        format_func=lambda k: source_labels.get(k, k),
+        format_func=lambda k: source_labels.get(k, k) or k,
         key=f"source-{movie.get('title','')}",
     )
     play_url = source_map.get(source_choice, PUBLIC_DOMAIN_STREAM)
@@ -983,7 +978,6 @@ def render_watch_page(movie: dict[str, object], tmdb_api_key: Optional[str]):
             )
             st.success(f"Saved your rating: {user_rating:.1f}")
 
-
 def render_trending_page(tmdb_api_key: Optional[str]):
     st.header("Trending Now")
     items = _get_featured_new_releases(limit=18)
@@ -997,7 +991,6 @@ def render_trending_page(tmdb_api_key: Optional[str]):
         for c, r in zip(cols, row):
             with c:
                 show_movie_card(r, tmdb_api_key)
-
 
 def render_favorites_page(tmdb_api_key: Optional[str]):
     st.header("Your Favorites")
@@ -1025,7 +1018,6 @@ def render_favorites_page(tmdb_api_key: Optional[str]):
     buf.seek(0)
     st.download_button("Download favorites (JSON)", data=buf, file_name="favorites.json", mime="application/json", key="dl-favs")
 
-
 @st.cache_data(ttl=10 * 60)
 def _get_featured_new_release():
     df = _apply_content_filter(load_movies())
@@ -1041,9 +1033,8 @@ def _get_featured_new_release():
             return df.sort_values(by="rating", ascending=False).iloc[0].to_dict()
     return df.iloc[0].to_dict()
 
-
 @st.cache_data(ttl=10 * 60)
-def _get_featured_new_releases(limit: int = 5) -> list[dict]:
+def _get_featured_new_releases(limit: int = 5) -> list[dict[str, Any]]:
     df = _apply_content_filter(load_movies())
     if df.empty:
         return []
@@ -1053,8 +1044,7 @@ def _get_featured_new_releases(limit: int = 5) -> list[dict]:
     elif "rating" in df.columns:
         df["rating"] = pd.to_numeric(df["rating"], errors="coerce")
         df = df.sort_values(by="rating", ascending=False)
-    return df.head(limit).to_dict(orient="records")
-
+    return cast(list[dict[str, Any]], df.head(limit).to_dict(orient="records"))
 
 def _maybe_run_daily_scraper(tmdb_api_key: Optional[str]) -> None:
     """Run scraper once every 24h (movies + TV) to refresh local DB/posters."""
@@ -1103,11 +1093,10 @@ def _maybe_run_daily_scraper(tmdb_api_key: Optional[str]) -> None:
         except Exception:
             pass
 
-
 _maybe_run_daily_scraper(TMDB_API_KEY or None)
 
 @st.cache_data(ttl=60 * 60)
-def fetch_tmdb_info(title: str, tmdb_api_key: Optional[str]) -> dict:
+def fetch_tmdb_info(title: str, tmdb_api_key: Optional[str]) -> dict[str, Any]:
     if not tmdb_api_key or not title:
         return {}
     try:
@@ -1118,19 +1107,20 @@ def fetch_tmdb_info(title: str, tmdb_api_key: Optional[str]) -> dict:
             timeout=5,
         )
         resp.raise_for_status()
-        results = resp.json().get("results") or []
+        data = cast(dict[str, Any], resp.json())
+        results = cast(list[dict[str, Any]], data.get("results") or [])
         if results:
             top = results[0]
-            return {
-                "rating": top.get("vote_average"),
-                "vote_count": top.get("vote_count"),
-                "overview": top.get("overview"),
-                "poster_path": top.get("poster_path"),
-            }
+            if isinstance(top, dict):
+                return {
+                    "rating": top.get("vote_average"),
+                    "vote_count": top.get("vote_count"),
+                    "overview": top.get("overview"),
+                    "poster_path": top.get("poster_path"),
+                }
     except Exception:
         pass
     return {}
-
 
 def render_star_rating(rating_out_of_10: float) -> str:
     try:
@@ -1171,24 +1161,25 @@ if st.session_state.get("page") == "favorites":
 
 st.markdown("<div class='section-title'>Recommendations</div>", unsafe_allow_html=True)
 
-# Mood-based flow using backend-only private sensing
+# Mood-based flow using backend-only private sensing (always on)
 if mode == "Mood Based":
     st.session_state.setdefault("recent_detected_moods", [])
+    st.session_state.setdefault("private_scan_allowed", True)
     st.session_state.setdefault("last_private_scan_ts", 0.0)
-    st.session_state.setdefault("scan_interval_sec", 6.0)
+    st.session_state.setdefault("scan_interval_sec", 5.0)
 
+    # Mood scanning always on in backend
     now = time.time()
     should_scan = (
         ("detected_mood" not in st.session_state)
         or (
             now - float(st.session_state.get("last_private_scan_ts", 0.0))
-            >= float(st.session_state.get("scan_interval_sec", 6.0))
+            >= float(st.session_state.get("scan_interval_sec", 5.0))
         )
     )
-
     if manual_override:
         should_scan = False
-        st.caption("Mood scanning paused while you search or filter genres.")
+        st.caption("Voice + mood scanning paused while you search or filter genres.")
     if should_scan:
         st.session_state["last_private_scan_ts"] = now
         try:
@@ -1226,20 +1217,18 @@ if mode == "Mood Based":
             st.session_state["recent_detected_moods"] = recent[-6:]
             st.session_state["detected_mood"] = mood
 
-
-        st.caption(f"Detected mood: {str(st.session_state.get('detected_mood')).upper()} | Source: {st.session_state.get('last_mood_source', 'unknown')}")
-    if not _HAS_SOUNDDEVICE:
+    if st.session_state.get("detected_mood"):
+        source = str(st.session_state.get("last_mood_source", "face")).upper()
+        st.caption(f"Detected mood: {str(st.session_state.get('detected_mood')).upper()} | Source: {source}")
+    if not _has_sounddevice:
         st.caption("Voice backend unavailable in this runtime (install `sounddevice` + PortAudio). Using face-only.")
     st.markdown("---")
 
 # auto-search on input/genre selection (no button)
 detected_mood = st.session_state.get("detected_mood")
 voice_title = str(st.session_state.get("voice_title_query", "")).strip()
-voice_live = st.session_state.get("voice_transcript", "").strip()
-title = typed_query or voice_live or voice_title
-if voice_live:
-    st.caption(f"🔴 Live voice: **{voice_live}**")
-if voice_title and not typed_query and not voice_live:
+title = typed_query or voice_title
+if voice_title and not typed_query:
     st.caption(f"Voice movie request: **{voice_title}**")
 
 if title:
@@ -1258,9 +1247,12 @@ if title:
             results = rerank_results_for_learning(results, detected_mood)
 elif selected_genres:
     df = _apply_content_filter(load_movies())
-    mask = df["genres"].fillna("").str.lower().apply(
-        lambda x: any(g.lower() in x for g in selected_genres)
-    )
+    selected_genres_lower = [g.lower() for g in selected_genres]
+
+    def _matches_selected_genres(value: str) -> bool:
+        return any(g in value for g in selected_genres_lower)
+
+    mask = df["genres"].fillna("").astype(str).str.lower().apply(_matches_selected_genres)
     matches = df[mask]
     if matches.empty:
         results = []
@@ -1271,9 +1263,11 @@ elif mode == "Mood Based" and detected_mood:
     base = _apply_content_filter(load_movies())
     genres = MOOD_TO_GENRES.get(detected_mood, [])
     if genres:
-        mask = base["genres"].fillna("").str.lower().apply(
-            lambda x: any(g.lower() in x for g in genres)
-        )
+        def _genre_matches(value: object) -> bool:
+            text = str(value or "").lower()
+            return any(g.lower() in text for g in genres)
+
+        mask = base["genres"].fillna("").apply(_genre_matches)
         matches = base[mask]
         if matches.empty:
             results = []
@@ -1321,10 +1315,7 @@ elif selected_genres:
                     show_movie_card(r, TMDB_API_KEY or None)
 else:
     if mode == "Mood Based":
-        if not st.session_state.get("private_scan_allowed", False):
-            st.warning("Allow to start mood-based recommendations.")  
-        else:
-            st.warning("Mood scan is running in backend. Recommendations will appear shortly.")
+        st.warning("Mood scan is running in backend. Recommendations will appear shortly.")
     else:
         st.warning("Type a title or pick genres first.")
 
@@ -1343,13 +1334,28 @@ if mode == "Mood Based":
 st.sidebar.markdown("---")
 st.sidebar.write("No backend API configured — the app reads local CSV and can trigger the embedded scraper.")
 
-# Auto-refresh loop: DISABLED per task requirements
+# Auto-refresh loop: when enabled, periodically rerun the app which will cause the UI to reflect updated server data.
+if AUTO_REFRESH and st.session_state.get("page") != "watch":
+    # store control flag in session state so user can uncheck to stop
+    st.session_state.setdefault("_auto_refresh_on", True)
+    st.session_state["_auto_refresh_on"] = True
+    placeholder = st.empty()
+    # Blocking loop that sleeps then triggers a rerun; Streamlit will re-run script after rerun()
+    # This is intentionally simple and user-controlled via the sidebar checkbox.
+    try:
+        time.sleep(POLL_INTERVAL)
+        # simply rerun to refresh local data view
+        st.rerun()
+    except Exception:
+        # on any interruption just continue (user may have unchecked)
+        pass
 
 # auto-rotate hero once per refresh (POLL_INTERVAL) to keep movement without extra reloads
 if st.session_state.get("page") == "home":
-    featured_list = banner_movies or _get_featured_new_releases(limit=8)
+    featured_list = banner_movies or _get_featured_new_releases(limit=6)
     if featured_list:
         hero_index = st.session_state.get("hero_index", 0) % len(featured_list)
         st.session_state["hero_index"] = hero_index
 
 st.markdown("</div>", unsafe_allow_html=True)
+

@@ -1,26 +1,40 @@
 {
   "version": 1,
-  "feedback_events": 7,
+  "feedback_events": 16,
   "mood_counts": {
-    "calm": 3,
-    "angry": 4
+    "calm": 6,
+    "angry": 8,
+    "happy": 1
   },
   "mood_genre_weights": {
     "calm": {
-      "documentary": 1.7999999999999998,
-      "music": 0.6
+      "documentary": 2.4,
+      "music": 0.6,
+      "comedy": 1.2,
+      "animation": 1.2,
+      "family": 1.2,
+      "adventure": 1.2,
+      "science fiction": 0.6,
+      "action": 0.6
     },
     "angry": {
-      "adventure": 1.2,
-      "thriller": 1.7999999999999998,
-      "science fiction": 0.7,
+      "adventure": 1.7999999999999998,
+      "thriller": 3.0,
+      "science fiction": 1.9,
       "romance": 0.6,
       "mystery": 0.6,
       "horror": 0.6,
       "animation": 0.6,
-      "action": 0.8,
+      "action": 3.2,
       "tv movie": 0.6,
-      "comedy": 0.6
+      "comedy": 0.6,
+      "crime": 0.6,
+      "drama": 0.6
+    },
+    "happy": {
+      "action": 0.6,
+      "crime": 0.6,
+      "thriller": 0.6
     }
   },
   "title_preferences": {
@@ -30,6 +44,14 @@
     "greenland 2: migration": 0.6,
     "dead again": 0.6,
     "succubus": 0.6,
-    "miraculous world: tokyo, stellar force": 0.6
+    "miraculous world: tokyo, stellar force": 0.6,
+    "the shadow's edge": 1.2,
+    "o": 0.6,
+    "fuse": 0.6,
+    "the spongebob movie: search for squarepants": 0.6,
+    "avengers: endgame": 0.6,
+    "war machine": 0.6,
+    "bureau 749": 0.6,
+    "bāhubali: the epic": 0.6
   }
 }

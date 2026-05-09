@@ -3,26 +3,28 @@
 from __future__ import annotations
 
 import os
-from typing import Any, Dict, Optional, Tuple
+from typing import Any, Dict, Optional, Tuple, Union, List, cast
 from pathlib import Path
 
 import numpy as np
 
 try:
     import cv2
+    from cv2 import CascadeClassifier
 
-    _HAS_CV2 = True
+    _has_cv2 = True
 except Exception:
     cv2 = None
-    _HAS_CV2 = False
+    CascadeClassifier = None
+    _has_cv2 = False
 
 try:
     from tensorflow.keras.models import load_model
 
-    _HAS_TF = True
+    _has_tf = True
 except Exception:
     load_model = None
-    _HAS_TF = False
+    _has_tf = False
 
 
 EMOTIONS = ["Angry", "Disgust", "Fear", "Happy", "Sad", "Surprise", "Neutral"]
@@ -49,9 +51,9 @@ _MOOD_WEIGHTS = {
     "Neutral": {"calm": 1.0},
 }
 
-if _HAS_CV2:
-    def _load_cascade():
-        cascade_paths = []
+if _has_cv2:
+    def _load_cascade() -> Optional[Any]:
+        cascade_paths: List[str] = []
         cv2_data = getattr(cv2, "data", None)
         if cv2_data and getattr(cv2_data, "haarcascades", None):
             cascade_paths.append(
@@ -78,24 +80,26 @@ if _HAS_CV2:
 
         for p in cascade_paths:
             if p and Path(p).exists():
-                cc = cv2.CascadeClassifier(p)
+                cc = CascadeClassifier(p)
                 if not cc.empty():
                     return cc
         return None
 
-    FACE_CASCADE = _load_cascade()
+    _face_cascade: Optional[Any] = _load_cascade()
 else:
-    FACE_CASCADE = None
+    _face_cascade: Optional[Any] = None
 
-_MODEL: Optional[Any] = None
+FACE_CASCADE: Optional[Any] = _face_cascade
+
+_model: Optional[Any] = None
 
 
 def _ensure_runtime_deps() -> None:
-    if not _HAS_CV2 or FACE_CASCADE is None:
+    if not _has_cv2 or _face_cascade is None:
         raise RuntimeError(
             "OpenCV face cascade not available. Install/reinstall `opencv-python` to enable mood detection."
         )
-    if not _HAS_TF or load_model is None:
+    if not _has_tf or load_model is None:
         raise RuntimeError(
             "TensorFlow is not installed. Install `tensorflow` to enable mood detection."
         )
@@ -103,6 +107,8 @@ def _ensure_runtime_deps() -> None:
 
 def _preprocess_fer_gray(face_gray: np.ndarray) -> np.ndarray:
     """FER-style preprocessing with contrast enhancement for webcam frames."""
+    if cv2 is None:
+        raise RuntimeError("OpenCV is not available")
     norm = cv2.normalize(face_gray, None, 0, 255, cv2.NORM_MINMAX)
     clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8))
     enhanced = clahe.apply(norm)
@@ -111,46 +117,51 @@ def _preprocess_fer_gray(face_gray: np.ndarray) -> np.ndarray:
     return x
 
 
-def _model_input_spec(model) -> Tuple[int, int, int, bool]:
+def _model_input_spec(model: Any) -> Tuple[int, int, int, bool]:
     """Return (height, width, channels, channels_first)."""
-    input_shape = getattr(model, "input_shape", None)
+    input_shape: Optional[Union[List[Tuple[Optional[int], ...]], Tuple[Optional[int], ...]]] = getattr(model, "input_shape", None)
     if isinstance(input_shape, list) and input_shape:
         input_shape = input_shape[0]
 
     # safe defaults for FER mini-XCEPTION
     height, width, channels, channels_first = 48, 48, 1, False
     if isinstance(input_shape, tuple):
+        input_shape = cast(Tuple[Optional[int], ...], input_shape)
         if len(input_shape) == 4:
             # (None, H, W, C) or (None, C, H, W)
-            if input_shape[1] in (1, 3) and input_shape[2] and input_shape[3]:
+            if (len(input_shape) >= 4 and isinstance(input_shape[1], int) and input_shape[1] in (1, 3) and
+                isinstance(input_shape[2], int) and input_shape[2] > 0 and
+                isinstance(input_shape[3], int) and input_shape[3] > 0):
                 channels_first = True
-                channels = int(input_shape[1])
-                height = int(input_shape[2])
-                width = int(input_shape[3])
+                channels = input_shape[1]
+                height = input_shape[2]
+                width = input_shape[3]
             else:
-                if input_shape[1] is not None:
-                    height = int(input_shape[1])
-                if input_shape[2] is not None:
-                    width = int(input_shape[2])
-                if input_shape[3] is not None:
-                    channels = int(input_shape[3])
+                if len(input_shape) >= 2 and isinstance(input_shape[1], int):
+                    height = input_shape[1]
+                if len(input_shape) >= 3 and isinstance(input_shape[2], int):
+                    width = input_shape[2]
+                if len(input_shape) >= 4 and isinstance(input_shape[3], int):
+                    channels = input_shape[3]
         elif len(input_shape) == 3:
-            if input_shape[1] is not None:
-                height = int(input_shape[1])
-            if input_shape[2] is not None:
-                width = int(input_shape[2])
+            if len(input_shape) >= 2 and isinstance(input_shape[1], int):
+                height = input_shape[1]
+            if len(input_shape) >= 3 and isinstance(input_shape[2], int):
+                width = input_shape[2]
     return height, width, channels, channels_first
 
+ 
+# Emotion detection model loading with flexible path resolution and caching for efficiency.
 
-def _load_emotion_model(model_path: Optional[str] = None):
-    global _MODEL
-    if _MODEL is not None:
-        return _MODEL
+def _load_emotion_model(model_path: Optional[str] = None) -> Any:
+    global _model
+    if _model is not None:
+        return _model
 
     _ensure_runtime_deps()
     # Resolve model path with fallback candidates so stale env vars do not break runtime.
     env_path = os.getenv("EMOTION_MODEL_PATH", "").strip()
-    candidates = []
+    candidates: List[str] = []
     if model_path and str(model_path).strip():
         candidates.append(str(model_path).strip())
     if env_path and env_path != "/absolute/path/to/your/model.h5":
@@ -171,11 +182,13 @@ def _load_emotion_model(model_path: Optional[str] = None):
             "models/emotion_model.h5, src/fer2013_mini_XCEPTION.102-0.66.hdf5."
         )
     # Inference-only usage: avoid deserializing legacy optimizer configs.
-    _MODEL = load_model(path, compile=False)
-    return _MODEL
+    _model = load_model(path, compile=False)
+    return _model
 
 
-def _extract_face(frame: np.ndarray, model) -> Optional[np.ndarray]:
+def _extract_face(frame: np.ndarray, model: Any) -> Optional[np.ndarray]:
+    if cv2 is None or FACE_CASCADE is None:
+        raise RuntimeError("OpenCV face cascade is not available")
     gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
     faces = FACE_CASCADE.detectMultiScale(
         gray, scaleFactor=1.1, minNeighbors=5, minSize=(48, 48)
@@ -184,7 +197,8 @@ def _extract_face(frame: np.ndarray, model) -> Optional[np.ndarray]:
         return None
 
     # Use largest face for stability when multiple faces are present.
-    x, y, w, h = sorted(faces, key=lambda f: f[2] * f[3], reverse=True)[0]
+    face_tuple: Tuple[int, int, int, int] = sorted(faces, key=lambda f: f[2] * f[3], reverse=True)[0]
+    x, y, w, h = face_tuple
     # Add padding so eyebrows/mouth are kept, which helps expression detection.
     pad_w = int(w * 0.20)
     pad_h = int(h * 0.20)
@@ -196,6 +210,8 @@ def _extract_face(frame: np.ndarray, model) -> Optional[np.ndarray]:
     face_gray = gray[y1:y2, x1:x2]
 
     target_h, target_w, channels, channels_first = _model_input_spec(model)
+    if cv2 is None:
+        raise RuntimeError("OpenCV is not available")
     face_gray = cv2.resize(
         face_gray, (int(target_w), int(target_h)), interpolation=cv2.INTER_AREA
     )
@@ -215,7 +231,7 @@ def _extract_face(frame: np.ndarray, model) -> Optional[np.ndarray]:
     return face.astype("float32")
 
 
-def _predict_probs(face: np.ndarray, model) -> np.ndarray:
+def _predict_probs(face: np.ndarray, model: Any) -> np.ndarray:
     probs = np.asarray(model.predict(face, verbose=0)[0], dtype="float32").reshape(-1)
     if probs.size != len(EMOTIONS):
         # keep current behavior for unknown models
@@ -305,7 +321,7 @@ def _pick_mood_from_probs(probs: np.ndarray) -> Tuple[str, float, str]:
     return mood, float(emo_conf), emotion
 
 
-def detect_emotion_details(frame: np.ndarray, model=None) -> Optional[Dict[str, Any]]:
+def detect_emotion_details(frame: np.ndarray, model: Optional[Any] = None) -> Optional[Dict[str, Any]]:
     """Return emotion details for the top detected face.
 
     Returns:
@@ -316,7 +332,8 @@ def detect_emotion_details(frame: np.ndarray, model=None) -> Optional[Dict[str, 
     if frame is None:
         return None
 
-    model = model or _load_emotion_model()
+    if model is None:
+        model = _load_emotion_model()
     face = _extract_face(frame, model=model)
     if face is None:
         return None
@@ -351,9 +368,27 @@ def detect_emotion_details(frame: np.ndarray, model=None) -> Optional[Dict[str, 
     }
 
 
-def detect_mood_from_frame(frame: np.ndarray, model=None) -> Optional[str]:
+def detect_mood_from_frame(frame: np.ndarray, model: Optional[Any] = None) -> Optional[str]:
     """Map detected emotion to app mood. Returns None when no face is detected."""
     details = detect_emotion_details(frame, model=model)
     if not details:
         return None
     return details["mood"]
+
+
+def detect_emotion_from_bytes(image_bytes: bytes) -> Optional[Dict[str, Any]]:
+    """Detect emotion from image bytes.
+
+    Args:
+        image_bytes: Raw image bytes (JPEG, PNG, etc.)
+
+    Returns:
+        None if no face detected, otherwise dict with mood, emotion, confidence, etc.
+    """
+    if not _has_cv2 or cv2 is None:
+        return None
+    nparr = np.frombuffer(image_bytes, np.uint8)
+    frame = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
+    if frame is None or not isinstance(frame, np.ndarray):
+        return None
+    return detect_emotion_details(frame)
